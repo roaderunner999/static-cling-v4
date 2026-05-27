@@ -54,10 +54,50 @@ fi
 # PG15+ locks down the public schema — make sure our role can create tables.
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
 
-echo "==> Writing ${ENV_FILE} (points v4 at ${DB_NAME})"
+# Preserve secrets across re-runs: rotating BETTER_AUTH_SECRET would log everyone
+# out, and clobbering provider keys would silently disable billing / OAuth /
+# email. Carry forward whatever is already in .env.
+prev() { [ -f "${ENV_FILE}" ] && grep "^$1=" "${ENV_FILE}" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+
+BETTER_AUTH_SECRET="$(prev BETTER_AUTH_SECRET)"
+if [ -n "${BETTER_AUTH_SECRET}" ]; then
+  echo "==> Reusing existing BETTER_AUTH_SECRET"
+else
+  BETTER_AUTH_SECRET="$(openssl rand -base64 32)"
+  echo "==> Generated a new BETTER_AUTH_SECRET"
+fi
+
+# Admin allowlist — preserved across re-runs; falls back to the owner so admin
+# access can never be lost. The seed migration also flags this email's role.
+ADMIN_EMAILS="$(prev ADMIN_EMAILS)"
+[ -n "${ADMIN_EMAILS}" ] || ADMIN_EMAILS="admin@lyons.net"
+
+# Optional provider keys — preserved if you've pasted them in before.
+GOOGLE_CLIENT_ID="$(prev GOOGLE_CLIENT_ID)"
+GOOGLE_CLIENT_SECRET="$(prev GOOGLE_CLIENT_SECRET)"
+RESEND_API_KEY="$(prev RESEND_API_KEY)"
+STRIPE_SECRET_KEY="$(prev STRIPE_SECRET_KEY)"
+STRIPE_WEBHOOK_SECRET="$(prev STRIPE_WEBHOOK_SECRET)"
+STRIPE_PRICE_ID="$(prev STRIPE_PRICE_ID)"
+
+echo "==> Writing ${ENV_FILE} (points v4 at ${DB_NAME}; preserves your keys)"
 cat > "${ENV_FILE}" <<EOF
 NODE_ENV=production
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
+BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+BETTER_AUTH_URL=https://static-cling.com
+
+# Admin console — comma-separated emails that always have admin access.
+ADMIN_EMAILS=${ADMIN_EMAILS}
+
+# Optional providers — paste a value, then restart the service (or re-run this
+# script; values are preserved across re-runs). Each feature activates when set.
+GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+RESEND_API_KEY=${RESEND_API_KEY}
+STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+STRIPE_PRICE_ID=${STRIPE_PRICE_ID}
 EOF
 chmod 600 "${ENV_FILE}"
 
@@ -66,7 +106,7 @@ cd "${APP_DIR}"
 set -a; . "${ENV_FILE}"; set +a
 echo "==> npm ci (incl dev deps) ..."
 npm ci --include=dev
-echo "==> drizzle migrate (creates the users table on real Postgres) ..."
+echo "==> drizzle migrate (drops Stage 0 placeholder, creates the auth tables) ..."
 npm run db:migrate
 echo "==> next build ..."
 npm run build
@@ -130,6 +170,33 @@ cat > "${NGINX_SITE}" <<'NGINX'
 server {
     server_name static-cling.com www.static-cling.com;
     root /var/www/static-cling;
+
+    # Stripe webhook — Stripe can't send the site password; it authenticates by
+    # signing the payload (verified in-app). Exact match beats /api/ below, and
+    # there is deliberately NO auth_basic here.
+    location = /api/stripe/webhook {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Better Auth (v4 on :3000). MORE SPECIFIC than /api/ below, so nginx's
+    # longest-prefix match routes /api/auth/* here and not to the :8080 backend.
+    location /api/auth/ {
+        auth_basic "Static Cling";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
 
     # Pre-existing backend — preserved untouched.
     location /api/ {
