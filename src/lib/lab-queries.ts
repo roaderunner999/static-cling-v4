@@ -15,16 +15,16 @@ function startOfMonthUTC() {
 }
 
 export type LabData = {
-  totals: { calls: number; costCents: number; inputTokens: number; outputTokens: number };
-  monthCostCents: number;
+  totals: { calls: number; costMicros: number; inputTokens: number; outputTokens: number };
+  monthCostMicros: number;
   byModel: {
     model: string;
     calls: number;
-    costCents: number;
+    costMicros: number;
     inputTokens: number;
     outputTokens: number;
   }[];
-  byFeature: { feature: string; calls: number; costCents: number }[];
+  byFeature: { feature: string; calls: number; costMicros: number }[];
   autoPicks: { model: string; calls: number }[];
   recent: {
     createdAt: Date;
@@ -33,27 +33,28 @@ export type LabData = {
     feature: string;
     inputTokens: number;
     outputTokens: number;
-    costCents: number;
+    costMicros: number;
     auto: boolean;
   }[];
 };
 
 const featureExpr = sql<string>`coalesce(${usageLedger.meta}->>'feature','other')`;
+// Sum micro-dollars as float8 — integer micros stay exact well past any balance
+// this app will see, and postgres-js hands float8 back as a JS number (not a string).
+const sumMicros = sql<number>`coalesce(sum(${usageLedger.costMicros}),0)::double precision`;
 
 export async function getLabData(): Promise<LabData> {
   const [totals] = await db
     .select({
       calls: sql<number>`count(*)::int`,
-      costCents: sql<number>`coalesce(sum(${usageLedger.costCents}),0)::int`,
-      inputTokens: sql<number>`coalesce(sum(${usageLedger.inputTokens}),0)::int`,
-      outputTokens: sql<number>`coalesce(sum(${usageLedger.outputTokens}),0)::int`,
+      costMicros: sumMicros,
+      inputTokens: sql<number>`coalesce(sum(${usageLedger.inputTokens}),0)::double precision`,
+      outputTokens: sql<number>`coalesce(sum(${usageLedger.outputTokens}),0)::double precision`,
     })
     .from(usageLedger);
 
   const [month] = await db
-    .select({
-      costCents: sql<number>`coalesce(sum(${usageLedger.costCents}),0)::int`,
-    })
+    .select({ costMicros: sumMicros })
     .from(usageLedger)
     .where(gte(usageLedger.createdAt, startOfMonthUTC()));
 
@@ -61,23 +62,23 @@ export async function getLabData(): Promise<LabData> {
     .select({
       model: usageLedger.model,
       calls: sql<number>`count(*)::int`,
-      costCents: sql<number>`coalesce(sum(${usageLedger.costCents}),0)::int`,
-      inputTokens: sql<number>`coalesce(sum(${usageLedger.inputTokens}),0)::int`,
-      outputTokens: sql<number>`coalesce(sum(${usageLedger.outputTokens}),0)::int`,
+      costMicros: sumMicros,
+      inputTokens: sql<number>`coalesce(sum(${usageLedger.inputTokens}),0)::double precision`,
+      outputTokens: sql<number>`coalesce(sum(${usageLedger.outputTokens}),0)::double precision`,
     })
     .from(usageLedger)
     .groupBy(usageLedger.model)
-    .orderBy(desc(sql`sum(${usageLedger.costCents})`));
+    .orderBy(desc(sql`sum(${usageLedger.costMicros})`));
 
   const byFeature = await db
     .select({
       feature: featureExpr,
       calls: sql<number>`count(*)::int`,
-      costCents: sql<number>`coalesce(sum(${usageLedger.costCents}),0)::int`,
+      costMicros: sumMicros,
     })
     .from(usageLedger)
     .groupBy(featureExpr)
-    .orderBy(desc(sql`sum(${usageLedger.costCents})`));
+    .orderBy(desc(sql`sum(${usageLedger.costMicros})`));
 
   const autoPicks = await db
     .select({
@@ -99,7 +100,7 @@ export async function getLabData(): Promise<LabData> {
       feature: featureExpr,
       inputTokens: usageLedger.inputTokens,
       outputTokens: usageLedger.outputTokens,
-      costCents: usageLedger.costCents,
+      costMicros: usageLedger.costMicros,
       auto: sql<boolean>`coalesce(${usageLedger.meta}->>'auto','false') = 'true'`,
     })
     .from(usageLedger)
@@ -111,7 +112,7 @@ export async function getLabData(): Promise<LabData> {
 
   return {
     totals,
-    monthCostCents: month.costCents,
+    monthCostMicros: month.costMicros,
     byModel,
     byFeature,
     autoPicks,

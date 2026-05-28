@@ -1,7 +1,7 @@
 import { and, count, eq, gte } from "drizzle-orm";
 import { db } from "@/db";
 import { conversation, message, usageLedger } from "@/db/schema";
-import { estimateCostCents } from "@/lib/models";
+import { costMicros, estimateCostCents } from "@/lib/models";
 
 /**
  * The usage backbone (the `usage_ledger` table built in Stage 2, written here
@@ -22,13 +22,17 @@ type RecordUsageArgs = {
 
 export async function recordUsage(args: RecordUsageArgs): Promise<void> {
   const costCents = estimateCostCents(args.model, args);
+  const micros = costMicros(args.model, args);
   await db.insert(usageLedger).values({
     userId: args.userId,
     model: args.model,
     inputTokens: args.inputTokens,
     outputTokens: args.outputTokens,
+    cacheReadTokens: args.cacheReadInputTokens ?? 0,
+    cacheCreationTokens: args.cacheCreationInputTokens ?? 0,
     costCents,
-    meta: { ...args.meta, costCents },
+    costMicros: micros,
+    meta: { ...args.meta, costMicros: micros },
   });
 }
 

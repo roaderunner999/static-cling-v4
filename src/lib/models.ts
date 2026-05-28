@@ -124,7 +124,31 @@ export function costOf(model: string, usage: UsageTokens): number {
   );
 }
 
-/** Cost rounded to whole US cents — the unit stored in the usage ledger. */
+/** Cost rounded to whole US cents — the legacy ledger column (rounds tiny calls to 0). */
 export function estimateCostCents(model: string, usage: UsageTokens): number {
   return Math.round(costOf(model, usage) * 100);
+}
+
+/**
+ * Cost in MICRO-dollars (USD × 1,000,000) — the precise ledger unit. Unlike
+ * whole cents, this keeps sub-cent calls (Haiku, the auto-router, short turns)
+ * from rounding to zero, so summed spend is accurate.
+ */
+export function costMicros(model: string, usage: UsageTokens): number {
+  return Math.round(costOf(model, usage) * 1_000_000);
+}
+
+/**
+ * Format a micro-dollar amount as a readable USD string. Big numbers get 2
+ * decimals ($12.34); small ones get just enough precision that a fraction of a
+ * cent still shows ($0.0004) instead of collapsing to $0.00.
+ */
+export function formatUsd(micros: number): string {
+  const d = micros / 1_000_000;
+  const a = Math.abs(d);
+  if (a === 0) return "$0.00";
+  if (a >= 0.1) return `$${d.toFixed(2)}`;
+  if (a >= 0.01) return `$${d.toFixed(3)}`;
+  if (a >= 0.001) return `$${d.toFixed(4)}`;
+  return `$${d.toFixed(5)}`;
 }

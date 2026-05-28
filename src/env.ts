@@ -61,6 +61,14 @@ const envSchema = z.object({
   // set, chat lights up (see `chatEnabled`).
   ANTHROPIC_API_KEY: z.string().optional(),
 
+  // --- Anthropic Admin / billing (real spend) ---
+  // Organization Admin key (sk-ant-admin…) — DISTINCT from the chat key above and
+  // only mintable by an org admin in Console → Admin keys. When set, the admin
+  // console pulls the org's ACTUAL billed spend from the Usage & Cost API and
+  // reconciles it against our own estimate (see `adminApiEnabled`). Never used for
+  // chat. The Admin API is org-only; it won't work on an individual account.
+  ANTHROPIC_ADMIN_KEY: z.string().optional(),
+
   // --- Abuse guards (the site is public) ---
   // Per-user burst limit: max chat messages in any 60s window.
   CHAT_RATE_PER_MIN: z.coerce.number().int().positive().default(15),
@@ -107,3 +115,10 @@ export const billingEnabled = Boolean(
 
 /** True when the Claude chat is configured (server-side API key present). */
 export const chatEnabled = Boolean(env.ANTHROPIC_API_KEY);
+
+/**
+ * True when an Anthropic Admin key is configured, so the admin console can pull
+ * real org spend from the Usage & Cost API. Dark (honest "connect billing"
+ * prompt) until an sk-ant-admin key is added.
+ */
+export const adminApiEnabled = Boolean(env.ANTHROPIC_ADMIN_KEY);

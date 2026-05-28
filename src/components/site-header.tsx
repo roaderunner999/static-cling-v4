@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getSession } from "@/lib/session";
-import { SignOutButton } from "@/components/sign-out-button";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { HeaderThemeToggle } from "@/components/header-theme-toggle";
+import { UserMenu } from "@/components/user-menu";
 import { APP_VERSION } from "@/lib/version";
 
 /**
@@ -30,7 +30,7 @@ export async function SiteHeader() {
         </Link>
 
         <nav className="flex items-center gap-1 text-sm sm:gap-3">
-          <ThemeToggle />
+          <HeaderThemeToggle />
           {session ? (
             <>
               <Link
@@ -51,16 +51,7 @@ export async function SiteHeader() {
               >
                 Tasks
               </Link>
-              <Link
-                href="/profile"
-                className="rounded-md px-3 py-1.5 font-medium transition hover:bg-zinc-100 dark:hover:bg-zinc-900"
-              >
-                Profile
-              </Link>
-              <span className="mx-1 hidden font-mono text-xs text-zinc-400 sm:inline">
-                {session.user.email}
-              </span>
-              <SignOutButton />
+              <UserMenu name={session.user.name} email={session.user.email} />
             </>
           ) : (
             <>

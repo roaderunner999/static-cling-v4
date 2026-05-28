@@ -80,6 +80,7 @@ STRIPE_SECRET_KEY="$(prev STRIPE_SECRET_KEY)"
 STRIPE_WEBHOOK_SECRET="$(prev STRIPE_WEBHOOK_SECRET)"
 STRIPE_PRICE_ID="$(prev STRIPE_PRICE_ID)"
 ANTHROPIC_API_KEY="$(prev ANTHROPIC_API_KEY)"
+ANTHROPIC_ADMIN_KEY="$(prev ANTHROPIC_ADMIN_KEY)"
 
 echo "==> Writing ${ENV_FILE} (points v4 at ${DB_NAME}; preserves your keys)"
 cat > "${ENV_FILE}" <<EOF
@@ -103,6 +104,12 @@ STRIPE_PRICE_ID=${STRIPE_PRICE_ID}
 # Claude chat (Stage 3) — server-side Anthropic API key. Paste sk-ant-… here and
 # restart (or re-run this script; preserved across re-runs). Chat lights up when set.
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+# Anthropic Admin key (sk-ant-admin…) — DISTINCT from the chat key above; mint it
+# as an org admin in Console → Admin keys. When set, the admin console shows the
+# org's REAL billed spend (Usage & Cost API) alongside our estimate. Preserved
+# across re-runs. Leave blank to keep the admin console on estimate-only.
+ANTHROPIC_ADMIN_KEY=${ANTHROPIC_ADMIN_KEY}
 EOF
 chmod 600 "${ENV_FILE}"
 

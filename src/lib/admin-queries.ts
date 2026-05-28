@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, gte } from "drizzle-orm";
 import { db } from "@/db";
 import { user as userTable, session as sessionTable, usageLedger } from "@/db/schema";
 
@@ -10,6 +10,15 @@ import { user as userTable, session as sessionTable, usageLedger } from "@/db/sc
  * Every value returned here is JSON-serializable (ISO strings, numbers, plain
  * objects) so it can cross the server→client boundary into <AdminConsole>.
  */
+
+/** A user's spend split across the models they've used (precise micro-dollars). */
+export type AdminModelSpend = {
+  model: string;
+  calls: number;
+  spendMicros: number;
+  inputTokens: number;
+  outputTokens: number;
+};
 
 export type AdminUserRow = {
   id: string;
@@ -24,8 +33,14 @@ export type AdminUserRow = {
   lastLoginIp: string | null;
   lastLoginDevice: string | null;
   activeSessions: number;
-  spendCents: number;
+  /** All-time and month-to-date spend, in micro-dollars (USD × 1e6). */
+  spendMicros: number;
+  spendMicrosMonth: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Claude calls this user has made (ledger rows: chat + router + notes-ai + …). */
   messages: number;
+  byModel: AdminModelSpend[];
   subscriptionStatus: string | null;
   currentPeriodEnd: string | null; // ISO
 };
@@ -37,7 +52,9 @@ export type AdminStats = {
   verifiedUsers: number;
   newUsers7d: number;
   activeSessions: number;
-  totalSpendCents: number;
+  /** Our estimate (summed ledger), all-time and month-to-date, in micro-dollars. */
+  totalSpendMicros: number;
+  monthSpendMicros: number;
   mrrUsd: number;
 };
 
@@ -94,9 +111,14 @@ export function deviceLabel(ua: string | null | undefined): string | null {
 export async function getAdminData(): Promise<AdminData> {
   const now = Date.now();
   const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const monthStart = new Date(
+    Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+  );
+  const micros = (col: typeof usageLedger.costMicros) =>
+    sql<number>`coalesce(sum(${col}),0)::double precision`;
 
-  // Three independent reads — fire them together.
-  const [users, sessions, usageRows] = await Promise.all([
+  // Five independent reads — fire them together.
+  const [users, sessions, usageRows, monthRows, modelRows] = await Promise.all([
     db.select().from(userTable),
     db
       .select({
@@ -111,12 +133,38 @@ export async function getAdminData(): Promise<AdminData> {
     db
       .select({
         userId: usageLedger.userId,
-        spendCents: sql<number>`coalesce(sum(${usageLedger.costCents}), 0)::int`,
+        spendMicros: micros(usageLedger.costMicros),
+        inputTokens: sql<number>`coalesce(sum(${usageLedger.inputTokens}),0)::double precision`,
+        outputTokens: sql<number>`coalesce(sum(${usageLedger.outputTokens}),0)::double precision`,
         messages: sql<number>`count(*)::int`,
       })
       .from(usageLedger)
       .groupBy(usageLedger.userId),
+    // Month-to-date spend per user — a separate query filtered with drizzle's
+    // gte() operator. (Interpolating a raw Date into sql`` throws in postgres-js;
+    // the operator encodes the param correctly.)
+    db
+      .select({
+        userId: usageLedger.userId,
+        spendMicrosMonth: micros(usageLedger.costMicros),
+      })
+      .from(usageLedger)
+      .where(gte(usageLedger.createdAt, monthStart))
+      .groupBy(usageLedger.userId),
+    db
+      .select({
+        userId: usageLedger.userId,
+        model: usageLedger.model,
+        calls: sql<number>`count(*)::int`,
+        spendMicros: micros(usageLedger.costMicros),
+        inputTokens: sql<number>`coalesce(sum(${usageLedger.inputTokens}),0)::double precision`,
+        outputTokens: sql<number>`coalesce(sum(${usageLedger.outputTokens}),0)::double precision`,
+      })
+      .from(usageLedger)
+      .groupBy(usageLedger.userId, usageLedger.model),
   ]);
+
+  const monthByUser = new Map(monthRows.map((m) => [m.userId, m.spendMicrosMonth]));
 
   // Index sessions per user: newest login + active count.
   type Latest = { at: Date; ip: string | null; ua: string | null };
@@ -133,9 +181,24 @@ export async function getAdminData(): Promise<AdminData> {
     }
   }
 
-  const usageByUser = new Map(
-    usageRows.map((u) => [u.userId, { spendCents: u.spendCents, messages: u.messages }]),
-  );
+  const usageByUser = new Map(usageRows.map((u) => [u.userId, u]));
+
+  // Per-user model breakdown, biggest spend first.
+  const modelsByUser = new Map<string, AdminModelSpend[]>();
+  for (const m of modelRows) {
+    const list = modelsByUser.get(m.userId) ?? [];
+    list.push({
+      model: m.model,
+      calls: m.calls,
+      spendMicros: m.spendMicros,
+      inputTokens: m.inputTokens,
+      outputTokens: m.outputTokens,
+    });
+    modelsByUser.set(m.userId, list);
+  }
+  for (const list of modelsByUser.values()) {
+    list.sort((a, b) => b.spendMicros - a.spendMicros);
+  }
 
   const rows: AdminUserRow[] = users
     .map((u) => {
@@ -154,8 +217,12 @@ export async function getAdminData(): Promise<AdminData> {
         lastLoginIp: latest?.ip ?? null,
         lastLoginDevice: deviceLabel(latest?.ua),
         activeSessions: activeByUser.get(u.id) ?? 0,
-        spendCents: usage?.spendCents ?? 0,
+        spendMicros: usage?.spendMicros ?? 0,
+        spendMicrosMonth: monthByUser.get(u.id) ?? 0,
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
         messages: usage?.messages ?? 0,
+        byModel: modelsByUser.get(u.id) ?? [],
         subscriptionStatus: u.subscriptionStatus,
         currentPeriodEnd: iso(u.currentPeriodEnd),
       };
@@ -171,7 +238,8 @@ export async function getAdminData(): Promise<AdminData> {
       .length,
     activeSessions: sessions.filter((s) => new Date(s.expiresAt).getTime() > now)
       .length,
-    totalSpendCents: rows.reduce((sum, r) => sum + r.spendCents, 0),
+    totalSpendMicros: rows.reduce((sum, r) => sum + r.spendMicros, 0),
+    monthSpendMicros: rows.reduce((sum, r) => sum + r.spendMicrosMonth, 0),
     mrrUsd: rows.filter((r) => r.plan === "pro").length * 8,
   };
 

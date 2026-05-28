@@ -36,6 +36,11 @@ export function NotesUI({
   // Zen (distraction-free) mode lives here so it can survive a reload — see the
   // restore effect below. NoteEditor renders the actual full-screen canvas.
   const [zen, setZenState] = useState(false);
+  // True while the mount effect is resolving which note to reopen. Lets us show a
+  // calm blank canvas instead of flashing the "no note / create one" empty state
+  // during the async resume round-trip. Starts true only when there ARE notes to
+  // resume (known from the server prop, so it's hydration-safe).
+  const [resuming, setResuming] = useState(initialNotes.length > 0);
 
   function toggleSidebar(open: boolean) {
     setSidebarOpen(open);
@@ -83,9 +88,11 @@ export function NotesUI({
       : undefined;
     const target =
       explicit ?? initialNotes.find((n) => n.id === lastId) ?? initialNotes[0];
-    void open(target.id).then(() => {
-      if (wantZen) setZenState(true);
-    });
+    void open(target.id)
+      .then(() => {
+        if (wantZen) setZenState(true);
+      })
+      .finally(() => setResuming(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -367,6 +374,10 @@ export function NotesUI({
               />
             </div>
           </>
+        ) : resuming ? (
+          // Resuming the last note — keep the canvas blank (no empty-state flash)
+          // until the async load resolves and the editor takes over.
+          <div className="flex-1" aria-hidden />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">

@@ -28,6 +28,16 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Rock-solid layout across pages: ALWAYS reserve the viewport scrollbar gutter,
+   whether or not a page actually scrolls. Tasks/Settings/Home scroll the document
+   (scrollbar present) while Chat/Notes are h-dvh + overflow-hidden (no document
+   scrollbar) — without this, switching between them adds/removes the ~15px
+   scrollbar and the whole header jumps sideways. `stable` keeps the gutter there
+   on every page so the top menu never moves on navigation. */
+html {
+  scrollbar-gutter: stable;
+}
+
 /* Hide a scrollbar cosmetically while keeping the element scrollable. Used on
    the chat composer (which auto-grows upward, then scrolls past its max height —
    the bar was just leftover visual noise) and the Zen writing canvas. */

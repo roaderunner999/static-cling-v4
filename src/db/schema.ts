@@ -5,8 +5,17 @@ import {
   timestamp,
   jsonb,
   integer,
+  bigint,
   index,
 } from "drizzle-orm/pg-core";
+
+/** Per-user preferences, surfaced on the typed session user and the settings page. */
+export type UserPreferences = {
+  /** Chat model the picker opens to for new conversations: "auto" or a model id. */
+  defaultModel?: string;
+  /** What the logged-in "/" opens to. */
+  defaultView?: "dashboard" | "chat";
+};
 
 /**
  * Stage 1 — Auth schema (Better Auth + Drizzle).
@@ -57,6 +66,12 @@ export const user = pgTable("user", {
   // Per-user feature flags, e.g. { "lab": true }.
   featureFlags: jsonb("feature_flags")
     .$type<Record<string, boolean>>()
+    .notNull()
+    .default({}),
+  // User-settable preferences (default chat model, default landing view). Edited
+  // from /settings; surfaced on the typed session user via a Better Auth field.
+  preferences: jsonb("preferences")
+    .$type<UserPreferences>()
     .notNull()
     .default({}),
 
@@ -143,8 +158,17 @@ export const usageLedger = pgTable("usage_ledger", {
   model: text("model").notNull(),
   inputTokens: integer("input_tokens").notNull().default(0),
   outputTokens: integer("output_tokens").notNull().default(0),
-  // Computed cost of the call in US cents (integer, for exactness).
+  // Cache tokens Anthropic bills separately (reads at ~0.1×, 5-min writes at
+  // ~1.25× the input rate). Stored so cost can be recomputed/re-priced exactly.
+  cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+  cacheCreationTokens: integer("cache_creation_tokens").notNull().default(0),
+  // Computed cost in whole US cents — kept for back-compat / coarse views, but
+  // it rounds sub-cent calls to 0. Prefer costMicros for anything that sums.
   costCents: integer("cost_cents").notNull().default(0),
+  // Computed cost in MICRO-dollars (USD × 1,000,000) — the precise unit. Sub-cent
+  // calls (Haiku, the auto-router, short turns) no longer vanish to 0 here, so
+  // sums are accurate. estimateCostCents stays for the legacy column.
+  costMicros: bigint("cost_micros", { mode: "number" }).notNull().default(0),
   // Free-form context, e.g. { feature: "chat", widgetId: "…" }.
   meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: createdAt(),

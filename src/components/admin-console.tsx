@@ -9,6 +9,8 @@ import type {
   AdminUserRow,
   SecurityEvent,
 } from "@/lib/admin-queries";
+import type { OrgCostResult } from "@/lib/anthropic-admin";
+import { formatUsd, resolveModel } from "@/lib/models";
 import {
   updateUserAction,
   revokeSessionsAction,
@@ -35,19 +37,28 @@ function rel(iso: string | null): string {
 const fullDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString() : "—";
 
-const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+/** Precise USD from micro-dollars (USD × 1e6) — sub-cent calls don't vanish. */
+const money = (micros: number) => formatUsd(micros);
+const num = (n: number) => Math.round(n).toLocaleString("en-US");
+const modelLabel = (id: string) => resolveModel(id).label || id;
 
 /* ------------------------------- console ------------------------------- */
 
 type Toast = { kind: "ok" | "err"; text: string };
 
+type SpendBasis = "all" | "month";
+
 export function AdminConsole({
   data,
+  orgCost,
+  adminApiEnabled,
   selfId,
   adminEmail,
   emailEnabled,
 }: {
   data: AdminData;
+  orgCost: OrgCostResult | null;
+  adminApiEnabled: boolean;
   selfId: string;
   adminEmail: string;
   emailEnabled: boolean;
@@ -57,6 +68,7 @@ export function AdminConsole({
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [basis, setBasis] = useState<SpendBasis>("all");
 
   function run(action: () => Promise<ActionResult>, onOk?: () => void) {
     startTransition(async () => {
@@ -111,6 +123,13 @@ export function AdminConsole({
       {/* Stats */}
       <StatsRow stats={data.stats} />
 
+      {/* Real spend (Anthropic) vs our estimate */}
+      <Reconciliation
+        stats={data.stats}
+        orgCost={orgCost}
+        adminApiEnabled={adminApiEnabled}
+      />
+
       {/* Toolbar */}
       <div className="mb-3 mt-10 flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-mono text-xs uppercase tracking-wider text-zinc-500">
@@ -118,6 +137,22 @@ export function AdminConsole({
           {filtered.length !== data.users.length ? ` of ${data.users.length}` : ""}
         </h2>
         <div className="flex items-center gap-2">
+          <div className="flex overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
+            {(["all", "month"] as const).map((b) => (
+              <button
+                key={b}
+                type="button"
+                onClick={() => setBasis(b)}
+                className={`px-2.5 py-1.5 font-medium transition ${
+                  basis === b
+                    ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
+                    : "text-zinc-500 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                }`}
+              >
+                {b === "all" ? "All time" : "This month"}
+              </button>
+            ))}
+          </div>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -144,7 +179,9 @@ export function AdminConsole({
               <Th>Last login</Th>
               <Th>IP · device</Th>
               <Th className="text-right">Sessions</Th>
-              <Th className="text-right">Spend</Th>
+              <Th className="text-right">
+                Spend {basis === "month" ? "· mo" : "· all"}
+              </Th>
             </tr>
           </thead>
           <tbody>
@@ -190,7 +227,7 @@ export function AdminConsole({
                   )}
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums text-zinc-600 dark:text-zinc-300">
-                  {money(u.spendCents)}
+                  {money(basis === "month" ? u.spendMicrosMonth : u.spendMicros)}
                 </td>
               </tr>
             ))}
@@ -246,7 +283,11 @@ function StatsRow({ stats }: { stats: AdminStats }) {
     { label: "Verified", value: `${stats.verifiedUsers}/${stats.totalUsers}` },
     { label: "New · 7d", value: String(stats.newUsers7d) },
     { label: "Active sessions", value: String(stats.activeSessions) },
-    { label: "Claude spend", value: money(stats.totalSpendCents), hint: "all time" },
+    {
+      label: "Claude spend",
+      value: money(stats.totalSpendMicros),
+      hint: "our estimate · all time",
+    },
   ];
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -264,6 +305,144 @@ function StatsRow({ stats }: { stats: AdminStats }) {
           {c.hint && <p className="mt-0.5 text-xs text-zinc-400">{c.hint}</p>}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ------------------------- spend reconciliation ------------------------ */
+
+function Reconciliation({
+  stats,
+  orgCost,
+  adminApiEnabled,
+}: {
+  stats: AdminStats;
+  orgCost: OrgCostResult | null;
+  adminApiEnabled: boolean;
+}) {
+  // Not configured — honest "connect billing" prompt, no fake numbers.
+  if (!adminApiEnabled || !orgCost) {
+    return (
+      <section className="mt-6 rounded-xl border border-dashed border-zinc-300 p-5 dark:border-zinc-700">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Real spend from Anthropic
+            </h2>
+            <p className="mt-1 max-w-xl text-sm text-zinc-500">
+              The spend above is <strong>our estimate</strong> — real token counts ×
+              the price table, now at micro-dollar precision. To show Anthropic’s{" "}
+              <strong>actual billed</strong> spend, add an Admin key
+              (<span className="font-mono text-xs">sk-ant-admin…</span>) on the server.
+              Mint one as an org admin in Console → Admin keys, set{" "}
+              <span className="font-mono text-xs">ANTHROPIC_ADMIN_KEY</span>, and re-run
+              golive. There is no “remaining balance” API — only billed spend.
+            </p>
+          </div>
+          <span className="rounded-md bg-zinc-100 px-2 py-1 font-mono text-[11px] uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+            estimate only
+          </span>
+        </div>
+      </section>
+    );
+  }
+
+  // Configured but the call failed — show estimate + the honest reason.
+  if (!orgCost.ok) {
+    return (
+      <section className="mt-6 rounded-xl border border-amber-300 p-5 dark:border-amber-900/60">
+        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+          Real spend from Anthropic
+        </h2>
+        <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
+          Couldn’t reach the Usage &amp; Cost API: {orgCost.error}
+        </p>
+        <p className="mt-1 text-sm text-zinc-500">
+          Showing our estimate meanwhile — all-time{" "}
+          <strong>{money(stats.totalSpendMicros)}</strong>, this month{" "}
+          <strong>{money(stats.monthSpendMicros)}</strong>.
+        </p>
+      </section>
+    );
+  }
+
+  const asOf = new Date(orgCost.fetchedAt).toLocaleTimeString();
+  return (
+    <section className="mt-6 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+          Real spend from Anthropic
+        </h2>
+        <span className="font-mono text-[11px] text-zinc-400">as of {asOf}</span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ReconCell
+          label="This month"
+          actualMicros={orgCost.monthMicros}
+          estimateMicros={stats.monthSpendMicros}
+        />
+        <ReconCell
+          label="All time (window)"
+          actualMicros={orgCost.totalMicros}
+          estimateMicros={stats.totalSpendMicros}
+        />
+      </div>
+
+      {orgCost.byCostType.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {orgCost.byCostType.map((c) => (
+            <span
+              key={c.key}
+              className="rounded-md bg-zinc-100 px-2 py-1 font-mono text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+            >
+              {c.key.replace(/_/g, " ")} · {money(c.micros)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-zinc-400">
+        Anthropic figures are <strong>org-wide</strong> (every API key on this org);
+        our estimate is just this app. Put the app’s key in its own workspace to
+        compare like-for-like. Per-user spend is always our estimate — Anthropic
+        bills the org, not your end-users.
+      </p>
+    </section>
+  );
+}
+
+function ReconCell({
+  label,
+  actualMicros,
+  estimateMicros,
+}: {
+  label: string;
+  actualMicros: number;
+  estimateMicros: number;
+}) {
+  const delta = estimateMicros - actualMicros;
+  const pct =
+    actualMicros > 0 ? Math.round((estimateMicros / actualMicros) * 100) : null;
+  return (
+    <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+      <p className="font-mono text-[11px] uppercase tracking-wider text-zinc-500">
+        {label}
+      </p>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
+          {money(actualMicros)}
+        </span>
+        <span className="text-xs text-zinc-400">Anthropic actual</span>
+      </div>
+      <p className="mt-1 text-sm text-zinc-500">
+        Our estimate: <span className="tabular-nums">{money(estimateMicros)}</span>
+        {pct !== null && (
+          <span className="ml-1 text-zinc-400">
+            ({pct}% of actual{Math.abs(delta) >= 5000 ? `, ${delta < 0 ? "under" : "over"}` : ""})
+          </span>
+        )}
+      </p>
     </div>
   );
 }
@@ -462,10 +641,56 @@ function EditDrawer({
           />
           <Fact label="Renews / ends" value={fullDate(user.currentPeriodEnd)} />
           <Fact
-            label="Claude usage"
-            value={`${money(user.spendCents)} · ${user.messages} msg`}
+            label="Claude spend"
+            value={`${money(user.spendMicros)} all · ${money(user.spendMicrosMonth)} mo`}
+          />
+          <Fact
+            label="Calls · tokens"
+            value={`${user.messages} · ${num(user.inputTokens + user.outputTokens)}`}
           />
         </dl>
+
+        {/* per-model spend breakdown */}
+        {user.byModel.length > 0 && (
+          <div className="mt-4">
+            <p className="mb-2 font-mono text-[11px] uppercase tracking-wider text-zinc-500">
+              Spend by model
+            </p>
+            <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500 dark:border-zinc-800">
+                    <th className="px-3 py-2 font-normal">Model</th>
+                    <th className="px-3 py-2 text-right font-normal">Calls</th>
+                    <th className="px-3 py-2 text-right font-normal">Tokens</th>
+                    <th className="px-3 py-2 text-right font-normal">Spend</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {user.byModel.map((m) => (
+                    <tr
+                      key={m.model}
+                      className="border-b border-zinc-100 last:border-0 dark:border-zinc-900"
+                    >
+                      <td className="px-3 py-2 text-zinc-800 dark:text-zinc-100">
+                        {modelLabel(m.model)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-zinc-600 dark:text-zinc-300">
+                        {num(m.calls)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-zinc-600 dark:text-zinc-300">
+                        {num(m.inputTokens + m.outputTokens)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-zinc-600 dark:text-zinc-300">
+                        {money(m.spendMicros)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* account actions */}
         <div className="mt-6 space-y-2">
@@ -636,8 +861,9 @@ function exportCsv(users: AdminUserRow[]) {
     "lastLoginIp",
     "lastLoginDevice",
     "activeSessions",
-    "spendUsd",
-    "messages",
+    "spendUsdAllTime",
+    "spendUsdThisMonth",
+    "calls",
   ];
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
   const lines = [headers.join(",")];
@@ -654,7 +880,8 @@ function exportCsv(users: AdminUserRow[]) {
         u.lastLoginIp ?? "",
         u.lastLoginDevice ?? "",
         String(u.activeSessions),
-        (u.spendCents / 100).toFixed(2),
+        (u.spendMicros / 1_000_000).toFixed(6),
+        (u.spendMicrosMonth / 1_000_000).toFixed(6),
         String(u.messages),
       ]
         .map((v) => esc(String(v)))

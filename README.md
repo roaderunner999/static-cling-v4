@@ -39,13 +39,25 @@ Hosting is **DigitalOcean** (not Fly, as originally planned) — see Deployment.
   (syncs across devices), with legacy import/export.
 - **Dashboard** — the logged-in `/` command center (counts, up-next tasks, recent
   notes & chats) with a calm first-timer welcome for brand-new accounts.
+- **Settings** — `/settings`, a full account area: profile, **own usage**
+  (precise spend + per-model breakdown + a messages-vs-limit meter), plan & billing,
+  **preferences** (default chat model + default landing view), **security** (active
+  sessions + sign-out-other-devices), an **Appearance** card (theme + an opt-in
+  header theme toggle), and a delete-account flow.
 - **Profile / billing** — `/profile`, Stripe Checkout + Customer Portal, Pro $8/mo.
-- **Admin** — owner-only `/admin` (user management, security log) and `/lab`
-  (org-wide Claude spend, Auto-routing distribution, cost-by-model/feature, a
-  model×prompt **benchmark**, and a paginated activity log).
+- **Admin** — owner-only `/admin` (user management, security log, **per-user spend
+  breakdown** with a month/all-time toggle) and `/lab` (org-wide Claude spend,
+  Auto-routing distribution, cost-by-model/feature, a model×prompt **benchmark**,
+  and a paginated activity log).
+- **Real spend** — Claude cost is tracked at **micro-dollar precision** (sub-cent
+  calls no longer round to $0), and the admin console reconciles our estimate against
+  Anthropic's **actual billed spend** via the Usage & Cost Admin API (env-gated on an
+  `sk-ant-admin…` key; honest "estimate only" state until set).
 - **Auth** — Better Auth email/password + sessions; Google OAuth & magic-link are
   env-gated drop-ins.
-- **Theme** — light/dark toggle with a no-flash boot script.
+- **Top bar** — a compact user-menu dropdown (Settings / Profile / Sign out) and a
+  rock-solid layout (reserved scrollbar gutter, so the menu never shifts on navigation).
+- **Theme** — light/dark, set in Settings → Appearance, with a no-flash boot script.
 
 ## Getting started
 
@@ -86,10 +98,11 @@ src/
     schema.ts     user/session/account/verification, usage_ledger,
                   conversation/message, note, task
   lib/            auth, session, billing, admin, models, anthropic, usage,
-                  chat-{queries,actions}, note-{queries,actions},
-                  task-{queries,actions}, auto-route, lab-queries, benchmark
+                  anthropic-admin (real org spend), chat-{queries,actions},
+                  note-{queries,actions}, task-{queries,actions}, auto-route,
+                  lab-queries, benchmark, settings-{queries,actions}, version
   env.ts          zod-validated environment variables (+ feature flags)
-drizzle/          Generated migrations (committed, 0000–0008)
+drizzle/          Generated migrations (committed, 0000–0009)
 drizzle.config.ts drizzle-kit config
 ```
 
@@ -140,12 +153,23 @@ Update flow: build a tarball (exclude `node_modules`/`.next`/`.git`/`.env.local`
 - [x] **The Lab** ✅ (admin): spend, Auto-routing distribution, cost tables,
       benchmark, paginated activity log.
 - [x] **Dashboard** ✅: logged-in command center + first-timer welcome.
-- [ ] Stage 4–8 — scheduled widgets (Inngest), custom buttons + routing thresholds,
-      PRO file-storage/manager (parked idea), polish/launch, Tauri desktop shell.
+- [x] **Settings + real spend** ✅ (2026-05-28): `/settings` account area; usage
+      ledger upgraded to **micro-dollar precision** (migration `0009`); admin
+      **per-user spend breakdown**; **Anthropic Cost API** reconciliation (real billed
+      spend vs our estimate, env-gated on `ANTHROPIC_ADMIN_KEY`).
+- [ ] **Stage 4–6 — the agent system** ("widgets" renamed **agents**): the
+      dashboard/agent contract + renderers, **scheduled agents** via Inngest (e.g. the
+      real-estate-broker morning-listings agent), and **custom user-tweakable agents**.
+      *(The AUTO router half of Stage 6 is already done.)*
+- [ ] **VIP tier** (idea): bring-your-own Anthropic key (BYOK) so power users run on
+      their own credits and see precise usage; a per-VIP workspace gives real,
+      Anthropic-sourced per-user attribution.
+- [ ] **Stage 7–8** — polish/security/observability/launch (rate limits ✅, still need
+      Sentry/logging/backups/status page/live-mode Stripe), Tauri desktop shell.
 
 ## Build log
 
-The app shows its build version in the header (`src/lib/version.ts`). Current: **4.1.4**.
+The app shows its build version in the header (`src/lib/version.ts`). Current: **4.2.5**.
 
 - **4.1.0** — Collapsible sidebars (default collapsed, remembered), edge-to-edge
   chat composer + hidden scrollbar, half-size theme toggle, **Notes Zen mode**
@@ -159,15 +183,36 @@ The app shows its build version in the header (`src/lib/version.ts`). Current: *
   images) when passed as an object through a Next Server Action; now passed as a
   JSON string (verbatim across the boundary). Images persist in notes again.
 - **4.1.4** — Removed the diagnostic logging; kept the fix + a visible "Save failed"
-  status. **(current build)**
+  status.
+- **4.2.0** — **Real spend + Settings.** Usage ledger upgraded to **micro-dollar
+  precision** (+ cache-token columns, migration `0009` with backfill) so cheap calls
+  stop rounding to $0. New **`/settings`** account area (profile, own usage + per-model,
+  plan & billing, preferences, security, delete account). Admin **per-user spend
+  breakdown** + month/all-time toggle. New **Anthropic Cost API** integration
+  (`anthropic-admin.ts`, env-gated `ANTHROPIC_ADMIN_KEY`) — admin reconciles real
+  billed spend vs our estimate. Preferences wire a **default chat model** + **default
+  landing view**.
+- **4.2.1** — **Fix:** `/settings` & `/admin` 500'd — a raw JS `Date` interpolated into
+  a `sql` template breaks postgres-js. Switched the month-spend query to drizzle's
+  `gte()` operator.
+- **4.2.2** — Top bar consolidated into a **user-menu dropdown** (Settings / Profile /
+  Sign out); `/settings` & `/profile` made edge-to-edge full width.
+- **4.2.3** — Light/dark toggle **moved into Settings → Appearance**, with an **opt-in**
+  (off by default) "show the toggle in the top bar" switch.
+- **4.2.4** — **Rock-solid menu:** `scrollbar-gutter: stable` always reserves the
+  scrollbar space, so the header no longer shifts when navigating between scrolling
+  (Tasks/Settings) and fixed-height (Chat/Notes) pages.
+- **4.2.5** — **No Notes resume flash:** reopening `/notes` was briefly showing the
+  "create a note" empty state during the async last-note load; now holds a blank canvas
+  until the note resolves, so it appears in place with no intermediate flash. **(current build)**
 
 ## GitHub status
 
-`origin` = `roaderunner999/static-cling-v4` (branch `main`). The repo on GitHub is
-at commit **`e5fbc02`** (Stages 1–2 + admin). Everything since — all of Stage 3
-(chat, notes, tasks, lab, auto-routing) plus the 4.1.x UI/Zen/fix work — is
-committed locally (**11 commits ahead**) and pending upload to GitHub. The live
-site on the droplet is updated independently via FileZilla → `golive.sh`, so it is
-already running build 4.1.4; GitHub is just the code backup and is catching up.
+`origin` = `roaderunner999/static-cling-v4` (branch `main`). GitHub was last refreshed
+to build **4.1.4** (via the web "Upload files" drag-drop). The entire **4.2.x** batch
+(real spend + Settings + admin per-user breakdown + the user-menu/theme/scrollbar
+polish) is live on the droplet (deployed via FileZilla → `golive.sh`) but **not yet on
+GitHub** — the code backup is catching up. The `github-upload-static-cling-v4/` folder
+is a complete current mirror prepared for the next drag-drop upload.
 
 See `static_cling_rebuild_roadmap_PROGRESS_*.html` for the full illustrated roadmap.

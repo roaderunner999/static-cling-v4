@@ -48,6 +48,7 @@ export function ChatUI({
   pro,
   usage,
   requestedId,
+  initialModel = "auto",
 }: {
   conversations: ConversationSummary[];
   models: ModelInfo[];
@@ -55,6 +56,8 @@ export function ChatUI({
   pro: boolean;
   usage: { used: number; limit: number };
   requestedId?: string;
+  /** The user's preferred default model for new chats (from /settings). */
+  initialModel?: ChatModel;
 }) {
   const [convos, setConvos] = useState<ConversationSummary[]>(conversations);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -62,7 +65,7 @@ export function ChatUI({
   const [input, setInput] = useState("");
   const [pending, setPending] = useState<Attachment[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [model, setModel] = useState<ChatModel>("auto");
+  const [model, setModel] = useState<ChatModel>(initialModel);
   const [streaming, setStreaming] = useState(false);
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

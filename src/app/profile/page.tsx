@@ -32,7 +32,7 @@ export default async function ProfilePage() {
   return (
     <>
       <SiteHeader />
-      <main className="mx-auto flex w-full max-w-md flex-1 flex-col gap-6 px-6 py-16">
+      <main className="flex w-full flex-1 flex-col gap-6 px-4 py-10 sm:px-8">
       <div>
         <p className="mb-1 font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
           Static Cling
