@@ -54,6 +54,19 @@ const envSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   // Stripe Price ID for the Pro plan (price_…), created in the dashboard.
   STRIPE_PRICE_ID: z.string().optional(),
+
+  // --- Claude chat (Stage 3) ---
+  // Server-side Anthropic API key (sk-ant-…). The legacy app held this in the
+  // browser; v4 keeps it here and all Claude calls go through /api/chat. When
+  // set, chat lights up (see `chatEnabled`).
+  ANTHROPIC_API_KEY: z.string().optional(),
+
+  // --- Abuse guards (the site is public) ---
+  // Per-user burst limit: max chat messages in any 60s window.
+  CHAT_RATE_PER_MIN: z.coerce.number().int().positive().default(15),
+  // Global wallet guard: max chat messages across all users per UTC day. A blunt
+  // ceiling that caps total spend if the site gets hammered. Raise as you grow.
+  CHAT_DAILY_GLOBAL_CAP: z.coerce.number().int().positive().default(3000),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -91,3 +104,6 @@ export const emailEnabled = Boolean(env.RESEND_API_KEY);
 export const billingEnabled = Boolean(
   env.STRIPE_SECRET_KEY && env.STRIPE_PRICE_ID,
 );
+
+/** True when the Claude chat is configured (server-side API key present). */
+export const chatEnabled = Boolean(env.ANTHROPIC_API_KEY);

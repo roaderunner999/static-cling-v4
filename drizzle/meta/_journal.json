@@ -36,6 +36,34 @@
       "when": 1779861496196,
       "tag": "0004_third_sharon_carter",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1779895013564,
+      "tag": "0005_lonely_sheva_callister",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779898127346,
+      "tag": "0006_free_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779898544611,
+      "tag": "0007_flaky_tag",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779907049606,
+      "tag": "0008_nervous_brood",
+      "breakpoints": true
     }
   ]
 }

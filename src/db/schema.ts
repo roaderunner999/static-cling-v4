@@ -5,6 +5,7 @@ import {
   timestamp,
   jsonb,
   integer,
+  index,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -148,4 +149,115 @@ export const usageLedger = pgTable("usage_ledger", {
   meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: createdAt(),
 });
+
+/**
+ * Stage 3 — Chat. A `conversation` is one thread; `message` rows are its turns.
+ * Both are app-owned (Better Auth never touches them), so we generate the ids.
+ * The legacy single-file app kept the transcript in localStorage; v4 persists it
+ * to Postgres so it follows the account across devices and feeds the usage ledger.
+ *
+ * `conversation.model` records the model the thread was last sent with (a chat
+ * can switch models mid-thread; this is just the current default for new turns).
+ */
+export const conversation = pgTable(
+  "conversation",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("New chat"),
+    // The model id this thread defaults to (e.g. "claude-sonnet-4-6").
+    model: text("model").notNull().default("claude-sonnet-4-6"),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("conversation_user_idx").on(t.userId, t.updatedAt)],
+);
+
+export const message = pgTable(
+  "message",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversation.id, { onDelete: "cascade" }),
+    // "user" or "assistant".
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    // The model that produced an assistant turn; null on user turns.
+    model: text("model"),
+    // Image attachments on a user turn (Stage 3c). Each is base64 + media type so
+    // it round-trips to Claude's vision and re-renders as a thumbnail on reload.
+    attachments: jsonb("attachments")
+      .$type<{ mediaType: string; data: string; name?: string }[]>()
+      .notNull()
+      .default([]),
+    createdAt: createdAt(),
+  },
+  (t) => [index("message_conversation_idx").on(t.conversationId, t.createdAt)],
+);
+
+/**
+ * Stage 3b — Notes. One row per note. `doc` is the canonical Tiptap (ProseMirror)
+ * JSON document; `plainText` is its flattened text, kept for list previews, future
+ * search, and as the clean payload for AI features (the →TO CHAT bridge, summarize,
+ * rewrite). Storing both means the editor round-trips losslessly while everything
+ * else that just needs the words reads `plainText`.
+ */
+export const note = pgTable(
+  "note",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Untitled"),
+    doc: jsonb("doc").$type<Record<string, unknown>>().notNull().default({}),
+    plainText: text("plain_text").notNull().default(""),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("note_user_idx").on(t.userId, t.updatedAt)],
+);
+
+/**
+ * Stage 4-ish — Tasks. A personal task board ported from the legacy localStorage
+ * app, now persisted per-account in Postgres so it syncs across devices.
+ * status ∈ todo|doing|done, priority ∈ low|medium|high, goal is a free-text
+ * grouping, checklist is a small array of {text, done} subtasks.
+ */
+export const task = pgTable(
+  "task",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    detail: text("detail").notNull().default(""),
+    goal: text("goal").notNull().default(""),
+    status: text("status").notNull().default("todo"),
+    priority: text("priority").notNull().default("medium"),
+    dueAt: timestamp("due_at", { withTimezone: true, mode: "date" }),
+    checklist: jsonb("checklist")
+      .$type<{ text: string; done: boolean }[]>()
+      .notNull()
+      .default([]),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("task_user_idx").on(t.userId, t.updatedAt)],
+);
 

@@ -5,6 +5,7 @@ import { getSession } from "@/lib/session";
 import { db } from "@/db";
 import { user as userTable } from "@/db/schema";
 import { SignOutButton } from "@/components/sign-out-button";
+import { SiteHeader } from "@/components/site-header";
 import { billingEnabled } from "@/env";
 import { isAdmin } from "@/lib/admin";
 import { isPro, PRO_PRICE_USD } from "@/lib/billing";
@@ -29,7 +30,9 @@ export default async function ProfilePage() {
   const billing = rows[0];
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-1 flex-col gap-6 px-6 py-16">
+    <>
+      <SiteHeader />
+      <main className="mx-auto flex w-full max-w-md flex-1 flex-col gap-6 px-6 py-16">
       <div>
         <p className="mb-1 font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
           Static Cling
@@ -37,14 +40,30 @@ export default async function ProfilePage() {
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
           Your profile
         </h1>
-        {admin && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <Link
-            href="/admin"
-            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-violet-300 px-3 py-1.5 text-sm font-medium text-violet-700 transition hover:bg-violet-50 dark:border-violet-900 dark:text-violet-300 dark:hover:bg-violet-950/40"
+            href="/chat"
+            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
           >
-            Admin console →
+            Open chat →
           </Link>
-        )}
+          {admin && (
+            <>
+              <Link
+                href="/admin"
+                className="inline-flex items-center gap-1.5 rounded-md border border-violet-300 px-3 py-1.5 text-sm font-medium text-violet-700 transition hover:bg-violet-50 dark:border-violet-900 dark:text-violet-300 dark:hover:bg-violet-950/40"
+              >
+                Admin console →
+              </Link>
+              <Link
+                href="/lab"
+                className="inline-flex items-center gap-1.5 rounded-md border border-violet-300 px-3 py-1.5 text-sm font-medium text-violet-700 transition hover:bg-violet-50 dark:border-violet-900 dark:text-violet-300 dark:hover:bg-violet-950/40"
+              >
+                The Lab →
+              </Link>
+            </>
+          )}
+        </div>
       </div>
 
       <dl className="divide-y divide-zinc-200 rounded-xl border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
@@ -113,7 +132,8 @@ export default async function ProfilePage() {
         </span>
         <SignOutButton />
       </div>
-    </main>
+      </main>
+    </>
   );
 }
 

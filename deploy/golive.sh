@@ -79,6 +79,7 @@ RESEND_API_KEY="$(prev RESEND_API_KEY)"
 STRIPE_SECRET_KEY="$(prev STRIPE_SECRET_KEY)"
 STRIPE_WEBHOOK_SECRET="$(prev STRIPE_WEBHOOK_SECRET)"
 STRIPE_PRICE_ID="$(prev STRIPE_PRICE_ID)"
+ANTHROPIC_API_KEY="$(prev ANTHROPIC_API_KEY)"
 
 echo "==> Writing ${ENV_FILE} (points v4 at ${DB_NAME}; preserves your keys)"
 cat > "${ENV_FILE}" <<EOF
@@ -98,6 +99,10 @@ RESEND_API_KEY=${RESEND_API_KEY}
 STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
 STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
 STRIPE_PRICE_ID=${STRIPE_PRICE_ID}
+
+# Claude chat (Stage 3) — server-side Anthropic API key. Paste sk-ant-… here and
+# restart (or re-run this script; preserved across re-runs). Chat lights up when set.
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 EOF
 chmod 600 "${ENV_FILE}"
 
@@ -149,15 +154,8 @@ if [ -z "${HEALTHY}" ]; then
   exit 1
 fi
 
-# --- 5. relocate old static site to /legacy/ --------------------------------
-echo "==> Moving existing static files to ${LEGACY_DIR}/ ..."
-mkdir -p "${LEGACY_DIR}"
-shopt -s nullglob
-for f in "${DOCROOT}"/*.html "${DOCROOT}"/*.bak*; do
-  [ "$(basename "$f")" = "legacy" ] && continue
-  mv -n "$f" "${LEGACY_DIR}/"
-done
-chown -R www-data:www-data "${LEGACY_DIR}" 2>/dev/null || true
+# --- 5. (removed) /legacy is retired — the old static site is no longer served.
+#        Delete the files once if they're still on disk: rm -rf "${LEGACY_DIR}"
 
 # --- 6. rewrite nginx (backup -> write -> test -> reload | revert) ----------
 echo "==> Backing up nginx config -> ${NGINX_SITE}.bak-${TS}"
@@ -170,6 +168,10 @@ cat > "${NGINX_SITE}" <<'NGINX'
 server {
     server_name static-cling.com www.static-cling.com;
     root /var/www/static-cling;
+
+    # Image uploads (chat attachments + base64 images embedded in Notes, saved via
+    # server actions) exceed nginx's 1m default. Raise it site-wide.
+    client_max_body_size 30m;
 
     # Stripe webhook — Stripe can't send the site password; it authenticates by
     # signing the payload (verified in-app). Exact match beats /api/ below, and
@@ -185,8 +187,6 @@ server {
     # Better Auth (v4 on :3000). MORE SPECIFIC than /api/ below, so nginx's
     # longest-prefix match routes /api/auth/* here and not to the :8080 backend.
     location /api/auth/ {
-        auth_basic "Static Cling";
-        auth_basic_user_file /etc/nginx/.htpasswd;
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -198,6 +198,26 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
+    # Chat streaming (v4 on :3000). SSE — buffering OFF so tokens reach the
+    # browser as they're produced (the app also sends X-Accel-Buffering: no).
+    # EXACT match (like the Stripe webhook): /api/chat is one endpoint with no
+    # sub-paths, and `=` beats the /api/ -> :8080 prefix so it isn't shadowed.
+    # (A trailing-slash prefix `/api/chat/` would NOT match the slashless POST.)
+    location = /api/chat {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        # Image uploads (base64) exceed nginx's 1m default — allow up to 30m.
+        client_max_body_size 30m;
+    }
+
     # Pre-existing backend — preserved untouched.
     location /api/ {
         proxy_pass http://127.0.0.1:8080;
@@ -207,21 +227,12 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # /legacy with no trailing slash -> /legacy/
-    location = /legacy { return 301 /legacy/; }
+    # /legacy retired — old static site removed. Any /legacy/* now falls through
+    # to the v4 app below (Next returns 404). Delete files: rm -rf /var/www/static-cling/legacy
 
-    # Old static test site (V3.27) — view at /legacy/.
-    location /legacy/ {
-        auth_basic "Static Cling";
-        auth_basic_user_file /etc/nginx/.htpasswd;
-        index index.html;
-        try_files $uri $uri/ =404;
-    }
-
-    # Static Cling v4 (Next.js) — everything else.
+    # Static Cling v4 (Next.js) — everything else. PUBLIC: the app's own login
+    # (Better Auth) guards Chat/Notes/Tasks/Profile/Lab; no basic-auth gate.
     location / {
-        auth_basic "Static Cling";
-        auth_basic_user_file /etc/nginx/.htpasswd;
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -255,10 +266,8 @@ if nginx -t; then
   systemctl reload nginx
   echo
   echo "================================================================"
-  echo " LIVE:"
-  echo "   v4 (real deal):  https://static-cling.com/"
-  echo "   old test site:   https://static-cling.com/legacy/"
-  echo " Both behind your existing Static Cling password."
+  echo " LIVE (PUBLIC — no basic-auth; app login guards the real pages):"
+  echo "   v4:  https://static-cling.com/"
   echo " nginx backup:      ${NGINX_SITE}.bak-${TS}"
   echo " v4 db:             ${DB_NAME}  (separate from the existing 'staticcling' db)"
   echo "================================================================"
