@@ -25,7 +25,7 @@ const ROUTER_SYSTEM = [
 const CLASS_TO_MODEL: Record<string, ModelId> = {
   haiku: "claude-haiku-4-5",
   sonnet: "claude-sonnet-4-6",
-  opus: "claude-opus-4-7",
+  opus: "claude-opus-4-8",
 };
 
 export async function classifyRoute(

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
 import type {
@@ -10,7 +9,8 @@ import type {
   SecurityEvent,
 } from "@/lib/admin-queries";
 import type { OrgCostResult } from "@/lib/anthropic-admin";
-import { formatUsd, resolveModel } from "@/lib/models";
+import type { VoiceUsageResult } from "@/lib/elevenlabs-admin";
+import { formatUsd, labelForModel } from "@/lib/models";
 import {
   updateUserAction,
   revokeSessionsAction,
@@ -40,7 +40,7 @@ const fullDate = (iso: string | null) =>
 /** Precise USD from micro-dollars (USD × 1e6) — sub-cent calls don't vanish. */
 const money = (micros: number) => formatUsd(micros);
 const num = (n: number) => Math.round(n).toLocaleString("en-US");
-const modelLabel = (id: string) => resolveModel(id).label || id;
+const modelLabel = (id: string) => labelForModel(id);
 
 /* ------------------------------- console ------------------------------- */
 
@@ -50,15 +50,15 @@ type SpendBasis = "all" | "month";
 
 export function AdminConsole({
   data,
-  orgCost,
   adminApiEnabled,
+  voiceEnabled,
   selfId,
   adminEmail,
   emailEnabled,
 }: {
   data: AdminData;
-  orgCost: OrgCostResult | null;
   adminApiEnabled: boolean;
+  voiceEnabled: boolean;
   selfId: string;
   adminEmail: string;
   emailEnabled: boolean;
@@ -98,37 +98,25 @@ export function AdminConsole({
   const selected = data.users.find((u) => u.id === selectedId) ?? null;
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
+    <main className="w-full flex-1 px-4 py-8 sm:px-8">
       {/* Header */}
-      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="mb-1 font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
-            Static Cling
-          </p>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-            Admin console
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            Signed in as {adminEmail}
-          </p>
-        </div>
-        <Link
-          href="/profile"
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-        >
-          ← Your profile
-        </Link>
+      <div className="mb-8">
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          Admin console
+        </h1>
+        <p className="mt-1 text-sm text-zinc-500">
+          Signed in as {adminEmail}
+        </p>
       </div>
 
       {/* Stats */}
       <StatsRow stats={data.stats} />
 
-      {/* Real spend (Anthropic) vs our estimate */}
-      <Reconciliation
-        stats={data.stats}
-        orgCost={orgCost}
-        adminApiEnabled={adminApiEnabled}
-      />
+      {/* Real spend (Anthropic) vs our estimate — fetched on demand */}
+      <Reconciliation stats={data.stats} adminApiEnabled={adminApiEnabled} />
+
+      {/* ElevenLabs voice-credit usage (only when premium voice is configured) */}
+      {voiceEnabled && <VoiceUsageCard />}
 
       {/* Toolbar */}
       <div className="mb-3 mt-10 flex flex-wrap items-center justify-between gap-3">
@@ -309,19 +297,67 @@ function StatsRow({ stats }: { stats: AdminStats }) {
   );
 }
 
+/* --------------------- on-demand fetch helpers ------------------------- */
+
+// State machine for a card whose data is fetched on click (kept out of the
+// admin page's render path so /admin loads instantly).
+type Lazy<T> =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "done"; data: T }
+  | { status: "error"; error: string };
+
+async function lazyFetch<T>(url: string, set: (s: Lazy<T>) => void) {
+  set({ status: "loading" });
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const j = (await res.json().catch(() => null)) as
+        | { error?: string; detail?: string }
+        | null;
+      set({ status: "error", error: j?.error || j?.detail || `HTTP ${res.status}` });
+      return;
+    }
+    set({ status: "done", data: (await res.json()) as T });
+  } catch (e) {
+    set({ status: "error", error: e instanceof Error ? e.message : "Request failed." });
+  }
+}
+
+function LazyButton<T>({
+  lazy,
+  idleLabel,
+  onClick,
+}: {
+  lazy: Lazy<T>;
+  idleLabel: string;
+  onClick: () => void;
+}) {
+  const loading = lazy.status === "loading";
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className="rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+    >
+      {loading ? "Loading…" : idleLabel}
+    </button>
+  );
+}
+
 /* ------------------------- spend reconciliation ------------------------ */
 
 function Reconciliation({
   stats,
-  orgCost,
   adminApiEnabled,
 }: {
   stats: AdminStats;
-  orgCost: OrgCostResult | null;
   adminApiEnabled: boolean;
 }) {
+  const [lazy, setLazy] = useState<Lazy<OrgCostResult | null>>({ status: "idle" });
+
   // Not configured — honest "connect billing" prompt, no fake numbers.
-  if (!adminApiEnabled || !orgCost) {
+  if (!adminApiEnabled) {
     return (
       <section className="mt-6 rounded-xl border border-dashed border-zinc-300 p-5 dark:border-zinc-700">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -347,15 +383,41 @@ function Reconciliation({
     );
   }
 
-  // Configured but the call failed — show estimate + the honest reason.
-  if (!orgCost.ok) {
+  const load = () => lazyFetch("/api/admin/org-cost", setLazy);
+  const orgCost = lazy.status === "done" ? lazy.data : null;
+
+  // Header + Load/Refresh button, always shown so the operator triggers the
+  // slow Anthropic call instead of it blocking every page load.
+  const header = (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+        Real spend from Anthropic
+      </h2>
+      <LazyButton lazy={lazy} idleLabel="Load billed spend" onClick={load} />
+    </div>
+  );
+
+  // Not loaded yet — just the prompt to fetch.
+  if (lazy.status === "idle" || lazy.status === "loading") {
+    return (
+      <section className="mt-6 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
+        {header}
+        <p className="text-sm text-zinc-500">
+          Anthropic’s actual billed spend is fetched on demand. Click{" "}
+          <strong>Load billed spend</strong> to pull it (org-wide, cached server-side).
+        </p>
+      </section>
+    );
+  }
+
+  // Loaded but the call failed (or returned nothing) — honest reason + estimate.
+  if (!orgCost || !orgCost.ok) {
     return (
       <section className="mt-6 rounded-xl border border-amber-300 p-5 dark:border-amber-900/60">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-          Real spend from Anthropic
-        </h2>
+        {header}
         <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
-          Couldn’t reach the Usage &amp; Cost API: {orgCost.error}
+          Couldn’t reach the Usage &amp; Cost API:{" "}
+          {lazy.status === "error" ? lazy.error : orgCost?.error ?? "unknown error"}
         </p>
         <p className="mt-1 text-sm text-zinc-500">
           Showing our estimate meanwhile — all-time{" "}
@@ -373,7 +435,10 @@ function Reconciliation({
         <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
           Real spend from Anthropic
         </h2>
-        <span className="font-mono text-[11px] text-zinc-400">as of {asOf}</span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[11px] text-zinc-400">as of {asOf}</span>
+          <LazyButton lazy={lazy} idleLabel="Refresh" onClick={load} />
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -444,6 +509,91 @@ function ReconCell({
         )}
       </p>
     </div>
+  );
+}
+
+/* --------------------------- voice usage (TTS) ------------------------- */
+
+function VoiceUsageCard() {
+  const [lazy, setLazy] = useState<Lazy<VoiceUsageResult | null>>({ status: "idle" });
+  const load = () => lazyFetch("/api/admin/voice-usage", setLazy);
+  const usage = lazy.status === "done" ? lazy.data : null;
+
+  const header = (idleLabel: string, extra?: React.ReactNode) => (
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+        Voice usage (ElevenLabs)
+      </h2>
+      <div className="flex items-center gap-3">
+        {extra}
+        <LazyButton lazy={lazy} idleLabel={idleLabel} onClick={load} />
+      </div>
+    </div>
+  );
+
+  // Not loaded yet — prompt to fetch (keeps the slow ElevenLabs call off render).
+  if (lazy.status === "idle" || lazy.status === "loading") {
+    return (
+      <section className="mt-6 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
+        {header("Load voice usage")}
+        <p className="text-sm text-zinc-500">
+          ElevenLabs credit usage is fetched on demand. Click{" "}
+          <strong>Load voice usage</strong> to pull it.
+        </p>
+      </section>
+    );
+  }
+
+  // Loaded but the call failed — honest reason, no fake numbers.
+  if (!usage || !usage.ok) {
+    return (
+      <section className="mt-6 rounded-xl border border-amber-300 p-5 dark:border-amber-900/60">
+        {header("Retry")}
+        <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
+          {lazy.status === "error"
+            ? lazy.error
+            : usage?.error ?? "Couldn’t read ElevenLabs usage."}
+        </p>
+      </section>
+    );
+  }
+
+  const pct = usage.limit > 0 ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : 0;
+  const fmt = (n: number) => n.toLocaleString();
+  const reset = usage.resetAt
+    ? new Date(usage.resetAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : null;
+  const asOf = new Date(usage.fetchedAt).toLocaleTimeString();
+  // Color the bar amber past 75%, red past 90% — a glanceable "running low" cue.
+  const bar = pct >= 90 ? "bg-red-500" : pct >= 75 ? "bg-amber-500" : "bg-violet-500";
+
+  return (
+    <section className="mt-6 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
+      {header("Refresh", <span className="font-mono text-[11px] text-zinc-400">as of {asOf}</span>)}
+
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
+          {fmt(usage.used)}
+        </span>
+        <span className="text-sm text-zinc-500">
+          / {fmt(usage.limit)} credits used this period
+        </span>
+        <span className="ml-auto rounded-md bg-zinc-100 px-2 py-1 font-mono text-[11px] uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+          {usage.tier} · {usage.status}
+        </span>
+      </div>
+
+      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+        <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
+      </div>
+
+      <p className="mt-2 text-xs text-zinc-400">
+        {fmt(usage.remaining)} credits left ({100 - pct}%)
+        {reset ? ` · resets ${reset}` : ""}. 1 credit ≈ 1 character of speech. This is
+        ElevenLabs’ own figure; per-call voice cost is also in the ledger (feature
+        “voice-tts”) on /lab.
+      </p>
+    </section>
   );
 }
 

@@ -3,13 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { ConversationSummary } from "@/lib/chat-queries";
-import type { ModelInfo, ModelId } from "@/lib/models";
+import type { ModelInfo, ModelId, TtsModelId } from "@/lib/models";
+import { TTS_MODELS } from "@/lib/models";
 import {
   loadConversation,
   deleteConversation,
+  searchChatContent,
   type LoadedMessage,
 } from "@/lib/chat-actions";
 import { Markdown } from "@/components/markdown";
+import { SidebarSearch, useContentSearch, Highlight } from "@/components/sidebar-search";
+import { useDictation, useSpeech, type VoiceMode } from "@/lib/use-voice";
 
 type Attachment = { mediaType: string; data: string; name?: string };
 type ChatModel = ModelId | "auto";
@@ -48,7 +52,9 @@ export function ChatUI({
   pro,
   usage,
   requestedId,
+  startNew = false,
   initialModel = "auto",
+  voice = { premiumAvailable: false },
 }: {
   conversations: ConversationSummary[];
   models: ModelInfo[];
@@ -56,8 +62,12 @@ export function ChatUI({
   pro: boolean;
   usage: { used: number; limit: number };
   requestedId?: string;
+  /** `/chat?new=1` — open a blank new chat instead of resuming the last one. */
+  startNew?: boolean;
   /** The user's preferred default model for new chats (from /settings). */
   initialModel?: ChatModel;
+  /** Voice capabilities resolved on the server (premium = ElevenLabs keyed). */
+  voice?: { premiumAvailable: boolean };
 }) {
   const [convos, setConvos] = useState<ConversationSummary[]>(conversations);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -74,7 +84,17 @@ export function ChatUI({
   // Sidebar starts collapsed for max real estate (esp. on tablets); we remember
   // the user's last choice so reopening it sticks.
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [convoQuery, setConvoQuery] = useState("");
   const [lightbox, setLightbox] = useState<string | null>(null);
+
+  // Voice: dictation (input) + speech (output). Both degrade gracefully —
+  // dictation needs the browser's Web Speech API, premium speech needs the
+  // server's ElevenLabs key; everything still works without either.
+  const dictation = useDictation();
+  const speech = useSpeech(voice.premiumAvailable);
+  // Holds the streaming assistant text so we can auto-read it aloud once the
+  // reply finishes (when a voice output mode is active).
+  const speakBuffer = useRef("");
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -88,6 +108,11 @@ export function ChatUI({
       /* ignore */
     }
   }
+  // On a phone the conversation list and the thread can't share the width, so
+  // opening a chat (or starting one) drops the list and shows the thread full-
+  // screen. On desktop (md+) both panes coexist, so the sidebar stays put.
+  const isMobile = () =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -128,7 +153,10 @@ export function ChatUI({
     const hasPrefill = !!(prefill || imgsRaw);
 
     let targetId: string | undefined;
-    if (conversations.length > 0) {
+    // `/chat?new=1` (the dashboard's "Start a new chat") forces a blank chat —
+    // skip the resume so we don't just reopen the conversation already on screen.
+    // An explicit `?id=` still wins (you asked for a specific thread).
+    if (conversations.length > 0 && !(startNew && !requestedId)) {
       let lastId: string | null = null;
       try {
         lastId = localStorage.getItem("staticcling_chat_last");
@@ -169,7 +197,7 @@ export function ChatUI({
         }
         sessionStorage.removeItem("staticcling_chat_prefill_images");
       }
-      if (hasPrefill) inputRef.current?.focus();
+      if (hasPrefill || (startNew && !requestedId)) inputRef.current?.focus();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -239,6 +267,13 @@ export function ChatUI({
     setError(null);
     setSearchStatus(null);
     setStreaming(true);
+    // Tear the mic down on send. On phones the recognition session ends after a
+    // pause; left "listening", the button stayed lit but captured nothing until
+    // a full page refresh. Stopping here means each turn gets a fresh session —
+    // tap the mic again to dictate the next message.
+    if (dictation.listening) dictation.stop();
+    speech.stop(); // a new turn cuts off any reply still being read aloud
+    speakBuffer.current = "";
     stick.current = true; // sending: jump to the newest message
 
     const userMsg: Msg = {
@@ -336,6 +371,7 @@ export function ChatUI({
       case "delta": {
         setSearchStatus(null);
         const text = evt.text as string;
+        speakBuffer.current += text;
         setMessages((m) =>
           m.map((x) =>
             x.id === assistantTmpId ? { ...x, content: x.content + text } : x,
@@ -355,6 +391,11 @@ export function ChatUI({
           if (!found) return cs;
           return [{ ...found, updatedAt: new Date() }, ...cs.filter((c) => c.id !== id)];
         });
+        // Read the finished reply aloud if a voice output mode is on. Pass the
+        // message id so that reply's own ⏹ button reflects/stops the playback.
+        if (speech.mode !== "off" && speakBuffer.current.trim()) {
+          speech.speak(speakBuffer.current, undefined, assistantTmpId);
+        }
         break;
       }
       case "error":
@@ -364,6 +405,16 @@ export function ChatUI({
   }
 
   const remaining = Math.max(0, usage.limit - used);
+  // Filter the sidebar list. Title matches are instant (local); message-body
+  // matches come from the debounced server search (convoHits, id → snippet).
+  const { hits: convoHits } = useContentSearch(convoQuery, searchChatContent);
+  const convoNeedle = convoQuery.trim().toLowerCase();
+  const visibleConvos = convoNeedle
+    ? convos.filter(
+        (c) =>
+          (c.title || "").toLowerCase().includes(convoNeedle) || convoHits?.has(c.id),
+      )
+    : convos;
   const canSend =
     enabled && !limitReached && !streaming && (input.trim().length > 0 || pending.length > 0);
   const labelFor = (id?: string) =>
@@ -373,7 +424,7 @@ export function ChatUI({
     <div className="flex min-h-0 flex-1">
       {/* Sidebar (collapsible) */}
       {sidebarOpen ? (
-      <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800">
+      <aside className="flex w-full shrink-0 flex-col border-r border-zinc-200 md:w-64 dark:border-zinc-800">
         <div className="flex items-center justify-between px-3 pt-2">
           <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
             Chats
@@ -388,30 +439,50 @@ export function ChatUI({
           </button>
         </div>
         <button
-          onClick={newChat}
+          onClick={() => {
+            newChat();
+            if (isMobile()) toggleSidebar(false);
+          }}
           className="mx-3 mb-2 mt-2 rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
           + New chat
         </button>
+        {convos.length > 0 && (
+          <SidebarSearch
+            value={convoQuery}
+            onChange={setConvoQuery}
+            placeholder="Search chats"
+          />
+        )}
         <nav className="flex-1 overflow-y-auto px-2 pb-2">
           {convos.length === 0 ? (
             <p className="px-2 py-3 text-xs text-zinc-400">No conversations yet.</p>
+          ) : visibleConvos.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-zinc-400">No chats match “{convoQuery}”.</p>
           ) : (
-            convos.map((c) => (
+            visibleConvos.map((c) => (
               <div
                 key={c.id}
-                className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${
+                className={`group flex items-start gap-1 rounded-md px-2 py-1.5 text-sm ${
                   c.id === activeId
                     ? "bg-zinc-100 dark:bg-zinc-900"
                     : "hover:bg-zinc-50 dark:hover:bg-zinc-900/60"
                 }`}
               >
                 <button
-                  onClick={() => openConversation(c.id)}
-                  className="flex-1 truncate text-left"
+                  onClick={() => {
+                    openConversation(c.id);
+                    if (isMobile()) toggleSidebar(false);
+                  }}
+                  className="min-w-0 flex-1 text-left"
                   title={c.title}
                 >
-                  {c.title}
+                  <div className="truncate">{c.title}</div>
+                  {convoHits?.has(c.id) && (
+                    <div className="truncate text-xs text-zinc-400">
+                      <Highlight text={convoHits.get(c.id)!} needle={convoQuery} />
+                    </div>
+                  )}
                 </button>
                 <button
                   onClick={() => remove(c.id)}
@@ -450,9 +521,10 @@ export function ChatUI({
         </button>
       )}
 
-      {/* Main — also the drop target */}
+      {/* Main — also the drop target. On a phone it's hidden while the list is
+          open so the two panes never fight over the narrow width; md+ shows both. */}
       <main
-        className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+        className={`relative ${sidebarOpen ? "hidden md:flex" : "flex"} min-h-0 min-w-0 flex-1 flex-col`}
         onDragOver={(e) => {
           if (!enabled) return;
           e.preventDefault();
@@ -523,12 +595,37 @@ export function ChatUI({
                       <span className="whitespace-pre-wrap">{m.content}</span>
                     )}
                   </div>
-                  {m.role === "assistant" && m.model && (
-                    <span className="mt-1 px-1 font-mono text-[10px] text-zinc-400">
-                      {m.auto ? "✦ Auto → " : ""}
-                      {labelFor(m.model)}
-                      {m.reason ? ` · ${m.reason}` : ""}
-                    </span>
+                  {m.role === "assistant" && (m.model || m.content) && (
+                    <div className="mt-1 flex items-center gap-1.5 px-1">
+                      {m.model && (
+                        <span className="font-mono text-[10px] text-zinc-400">
+                          {m.auto ? "✦ Auto → " : ""}
+                          {labelFor(m.model)}
+                          {m.reason ? ` · ${m.reason}` : ""}
+                        </span>
+                      )}
+                      {m.content && (() => {
+                        const playingThis = speech.speakingId === m.id;
+                        return (
+                          <button
+                            onClick={() =>
+                              playingThis
+                                ? speech.stop()
+                                : speech.speak(
+                                    m.content,
+                                    speech.mode === "off" ? "native" : undefined,
+                                    m.id,
+                                  )
+                            }
+                            title={playingThis ? "Stop" : "Read aloud"}
+                            aria-label={playingThis ? "Stop reading" : "Read aloud"}
+                            className="text-[11px] leading-none text-zinc-400 transition hover:text-zinc-700 dark:hover:text-zinc-200"
+                          >
+                            {playingThis ? "⏹" : "🔊"}
+                          </button>
+                        );
+                      })()}
+                    </div>
                   )}
                 </div>
               ))
@@ -547,6 +644,21 @@ export function ChatUI({
             {error && (
               <p className="mb-2 text-sm text-red-600 dark:text-red-400" role="alert">
                 {error}
+              </p>
+            )}
+            {speech.error && (
+              <p
+                className="mb-2 flex items-start gap-2 text-sm text-amber-600 dark:text-amber-400"
+                role="alert"
+              >
+                <span>🔇 {speech.error}</span>
+                <button
+                  onClick={speech.clearError}
+                  className="shrink-0 underline"
+                  aria-label="Dismiss"
+                >
+                  dismiss
+                </button>
               </p>
             )}
             {limitReached && (
@@ -582,7 +694,10 @@ export function ChatUI({
               </div>
             )}
 
-            <div className="flex items-end gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              {/* Controls wrap onto their own line on a phone so they never shove
+                  the textarea/Send off-screen; inline with everything on sm+. */}
+              <div className="flex items-center gap-2">
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value as ChatModel)}
@@ -629,6 +744,73 @@ export function ChatUI({
                 📎
               </button>
 
+              {dictation.supported && (
+                <button
+                  onClick={() =>
+                    dictation.toggle((phrase) =>
+                      setInput((t) => (t ? `${t} ${phrase}` : phrase)),
+                    )
+                  }
+                  disabled={!enabled || limitReached}
+                  title={dictation.listening ? "Stop dictation" : "Dictate (speak your message)"}
+                  aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
+                  className={`rounded-md border px-2.5 py-2 text-sm transition disabled:opacity-40 ${
+                    dictation.listening
+                      ? "animate-pulse border-red-400 bg-red-50 dark:border-red-500 dark:bg-red-950"
+                      : "border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                  }`}
+                >
+                  {dictation.listening ? "🔴" : "🎤"}
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  const order: VoiceMode[] = voice.premiumAvailable
+                    ? ["off", "native", "premium"]
+                    : ["off", "native"];
+                  const next = order[(order.indexOf(speech.mode) + 1) % order.length];
+                  if (next === "off") speech.stop();
+                  speech.setVoiceMode(next);
+                }}
+                title={
+                  speech.mode === "off"
+                    ? "Voice replies: off — click to read replies aloud"
+                    : speech.mode === "native"
+                      ? "Voice replies: native (free, built-in)"
+                      : "Voice replies: premium (ElevenLabs)"
+                }
+                aria-label="Toggle spoken replies"
+                className={`shrink-0 rounded-md border px-2.5 py-2 text-sm transition ${
+                  speech.mode === "off"
+                    ? "border-zinc-300 text-zinc-400 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                    : "border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500 dark:bg-violet-950 dark:text-violet-300"
+                }`}
+              >
+                {speech.mode === "off" ? "🔇" : speech.mode === "native" ? "🔈" : "✨"}
+              </button>
+
+              {/* Premium-only: pick the ElevenLabs voice model. Turbo is the
+                  snappy/cheaper default; v3 is richest but ~2× the credits.
+                  Only meaningful while premium is the active mode. */}
+              {voice.premiumAvailable && speech.mode === "premium" && (
+                <select
+                  value={speech.ttsModel}
+                  onChange={(e) => speech.setTtsModel(e.target.value as TtsModelId)}
+                  title="Premium voice model — Turbo (fast, ~half the cost) or v3 (richest, pricier)"
+                  aria-label="Premium voice model"
+                  className="shrink-0 rounded-md border border-violet-400 bg-violet-50 px-1.5 py-2 text-xs text-violet-700 outline-none dark:border-violet-500 dark:bg-violet-950 dark:text-violet-300"
+                >
+                  {TTS_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              </div>
+
+              <div className="flex min-w-0 flex-1 items-end gap-2">
               <textarea
                 ref={inputRef}
                 value={input}
@@ -649,7 +831,7 @@ export function ChatUI({
                 rows={1}
                 placeholder={enabled ? "Message Static Cling…" : "Chat unavailable"}
                 disabled={!enabled || limitReached || streaming}
-                className="no-scrollbar min-h-[48px] flex-1 resize-none overflow-y-auto rounded-md border border-zinc-300 bg-transparent px-3 py-2.5 text-[15px] outline-none focus:border-zinc-500 disabled:opacity-50 dark:border-zinc-700"
+                className="no-scrollbar min-h-[48px] min-w-0 flex-1 resize-none overflow-y-auto rounded-md border border-zinc-300 bg-transparent px-3 py-2.5 text-[15px] outline-none focus:border-zinc-500 disabled:opacity-50 dark:border-zinc-700"
               />
               <button
                 onClick={send}
@@ -658,6 +840,7 @@ export function ChatUI({
               >
                 {streaming ? "…" : "Send"}
               </button>
+              </div>
             </div>
           </div>
         </div>

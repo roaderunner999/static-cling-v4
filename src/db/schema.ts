@@ -8,6 +8,7 @@ import {
   bigint,
   index,
 } from "drizzle-orm/pg-core";
+import type { RoomAttachment } from "@/lib/rooms-shared";
 
 /** Per-user preferences, surfaced on the typed session user and the settings page. */
 export type UserPreferences = {
@@ -228,6 +229,35 @@ export const message = pgTable(
 );
 
 /**
+ * Self-hosted group chat — the "rooms" feature (main chat for all users; the VIP
+ * `renegades` app will build on this same table). UNLIKE the 1:1 Claude
+ * `conversation`/`message` tables, these are MULTI-user rooms keyed by a slug
+ * ("general", "porsche", …). AI participants post here too: `kind` distinguishes
+ * a human from each AI persona, and `authorId` is the user.id for humans / null
+ * for AI. Realtime fan-out is in-process (see lib/room-bus.ts); this table is the
+ * durable history that backfills a client when it joins. No per-minute cost —
+ * the whole point vs LiveKit Cloud.
+ */
+export const roomMessage = pgTable(
+  "room_message",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    room: text("room").notNull(),
+    authorId: text("author_id"), // user.id for humans; null for AI personas
+    authorName: text("author_name").notNull(),
+    kind: text("kind").notNull().default("human"), // "human" | "claude" | "claudette"
+    body: text("body").notNull(),
+    // Files shared into the room (images + docs). Base64 data URIs for now — no
+    // object storage yet; sizes are capped client + server side. See RoomAttachment.
+    attachments: jsonb("attachments").$type<RoomAttachment[]>().notNull().default([]),
+    createdAt: createdAt(),
+  },
+  (t) => [index("room_message_room_idx").on(t.room, t.createdAt)],
+);
+
+/**
  * Stage 3b — Notes. One row per note. `doc` is the canonical Tiptap (ProseMirror)
  * JSON document; `plainText` is its flattened text, kept for list previews, future
  * search, and as the clean payload for AI features (the →TO CHAT bridge, summarize,
@@ -251,6 +281,84 @@ export const note = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [index("note_user_idx").on(t.userId, t.updatedAt)],
+);
+
+/**
+ * Stage 4 — Agents (the roadmap's "widgets", renamed). An agent is a saved,
+ * repeatable Claude task that produces a STRUCTURED result, rendered as a card on
+ * the agent board. The contract mirrors the roadmap's
+ * `{type, data_source, render_target, schedule, budget_cents}`:
+ *
+ *   - renderTarget: how the result is drawn — number|list|table|line|text|image.
+ *   - dataSource:   where it pulls from — web (Claude + web search), claude
+ *                   (knowledge only), tasks, notes (runs over the user's OWN data).
+ *   - schedule:     "manual" for now; the cron executor is Stage 5 (Inngest). The
+ *                   field exists now so the data model doesn't churn when scheduling
+ *                   lands.
+ *   - budgetCents:  per-run cost ceiling (soft this stage — max_tokens is capped by
+ *                   render type and the real cost is recorded; a run that exceeds it
+ *                   is flagged. Hard pre-emptive ceilings arrive with the scheduler).
+ *
+ * `lastResult` caches the most recent run so the card renders instantly on load
+ * (and, once scheduling lands, shows the dawn run without a live call). App-owned;
+ * we generate the id.
+ */
+export type AgentRenderTarget = "number" | "list" | "table" | "line" | "text" | "image";
+export type AgentDataSource = "web" | "claude" | "tasks" | "notes";
+
+/** The cached output of an agent's last run. `data`'s shape depends on `target`. */
+export type AgentResult = {
+  target: AgentRenderTarget;
+  /** Render-target-specific payload (a number, an array of items, table rows, …). */
+  data: unknown;
+  /** A short human caption Claude returns alongside the data. */
+  caption?: string;
+  /** Set when the run failed or the model couldn't produce the asked-for shape. */
+  error?: string;
+  /** ISO timestamp of the run that produced this. */
+  ranAt?: string;
+};
+
+export const agent = pgTable(
+  "agent",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("New agent"),
+    // What the agent should do, in plain language (the prompt Claude runs).
+    instruction: text("instruction").notNull().default(""),
+    renderTarget: text("render_target")
+      .$type<AgentRenderTarget>()
+      .notNull()
+      .default("text"),
+    dataSource: text("data_source")
+      .$type<AgentDataSource>()
+      .notNull()
+      .default("claude"),
+    // The model this agent runs on (cheap agents can pin Haiku).
+    model: text("model").notNull().default("claude-sonnet-4-6"),
+    // "manual" runs only on demand this stage; Stage 5 adds hourly/daily/cron.
+    schedule: text("schedule").notNull().default("manual"),
+    // Per-run cost ceiling in whole US cents (soft this stage).
+    budgetCents: integer("budget_cents").notNull().default(5),
+    // Board ordering (drag-to-reorder persists this).
+    position: integer("position").notNull().default(0),
+    enabled: boolean("enabled").notNull().default(true),
+    // Cached output of the most recent run (renders instantly on load).
+    lastResult: jsonb("last_result").$type<AgentResult | null>(),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true, mode: "date" }),
+    // The model + cost of the last run (cost in micro-dollars, the precise unit).
+    lastModel: text("last_model"),
+    lastCostMicros: bigint("last_cost_micros", { mode: "number" }).notNull().default(0),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("agent_user_idx").on(t.userId, t.position)],
 );
 
 /**

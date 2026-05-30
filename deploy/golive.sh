@@ -81,6 +81,35 @@ STRIPE_WEBHOOK_SECRET="$(prev STRIPE_WEBHOOK_SECRET)"
 STRIPE_PRICE_ID="$(prev STRIPE_PRICE_ID)"
 ANTHROPIC_API_KEY="$(prev ANTHROPIC_API_KEY)"
 ANTHROPIC_ADMIN_KEY="$(prev ANTHROPIC_ADMIN_KEY)"
+# Premium voice (ElevenLabs). Key preserved; voice/model fall back to sensible
+# defaults (in env.ts) when blank, so only the key is strictly needed.
+ELEVENLABS_API_KEY="$(prev ELEVENLABS_API_KEY)"
+ELEVENLABS_VOICE_ID="$(prev ELEVENLABS_VOICE_ID)"
+ELEVENLABS_MODEL_ID="$(prev ELEVENLABS_MODEL_ID)"
+# Voice bake-off contenders (admin /lab TTS bench). Keys preserved; voice/model
+# IDs fall back to defaults in env.ts when blank, so only the key is needed.
+CARTESIA_API_KEY="$(prev CARTESIA_API_KEY)"
+CARTESIA_VOICE_ID="$(prev CARTESIA_VOICE_ID)"
+CARTESIA_MODEL_ID="$(prev CARTESIA_MODEL_ID)"
+DEEPGRAM_API_KEY="$(prev DEEPGRAM_API_KEY)"
+DEEPGRAM_TTS_MODEL="$(prev DEEPGRAM_TTS_MODEL)"
+# Renegades realtime rooms (LiveKit). All three preserved across re-runs; the
+# /renegades page stays dark until all three are present.
+LIVEKIT_URL="$(prev LIVEKIT_URL)"
+LIVEKIT_API_KEY="$(prev LIVEKIT_API_KEY)"
+LIVEKIT_API_SECRET="$(prev LIVEKIT_API_SECRET)"
+
+# SAFETY NET: back up the existing .env before we rewrite it. This script
+# regenerates .env every run and only carries forward keys it can still READ
+# (see prev() above) — so if .env was missing/clobbered when this ran, the keys
+# would be blanked and you'd be re-entering everything. With this backup, a wipe
+# is always one command to recover:  cp ${ENV_FILE}.bak-<ts> ${ENV_FILE}
+if [ -f "${ENV_FILE}" ]; then
+  cp -a "${ENV_FILE}" "${ENV_FILE}.bak-${TS}"
+  echo "==> Backed up existing .env -> ${ENV_FILE}.bak-${TS}"
+else
+  echo "==> WARNING: no existing ${ENV_FILE} found — keys will be written BLANK unless re-pasted."
+fi
 
 echo "==> Writing ${ENV_FILE} (points v4 at ${DB_NAME}; preserves your keys)"
 cat > "${ENV_FILE}" <<EOF
@@ -110,6 +139,33 @@ ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 # org's REAL billed spend (Usage & Cost API) alongside our estimate. Preserved
 # across re-runs. Leave blank to keep the admin console on estimate-only.
 ANTHROPIC_ADMIN_KEY=${ANTHROPIC_ADMIN_KEY}
+
+# Premium voice (ElevenLabs TTS) — paste your key, restart (or re-run this
+# script; preserved across re-runs). Voice replies' "Premium" (✨) option lights
+# up when set; native browser voice is the free fallback. VOICE_ID/MODEL_ID are
+# optional (defaults: Rachel + turbo low-latency).
+ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID}
+ELEVENLABS_MODEL_ID=${ELEVENLABS_MODEL_ID}
+
+# Voice bake-off contenders — tested side-by-side in /lab against native +
+# ElevenLabs (admin-only, /api/tts/bench). Paste a key to light up that engine's
+# card; preserved across re-runs. Cartesia = the ~90ms latency leader (+ custom
+# voices); Deepgram Aura = fast voice-agent TTS. VOICE/MODEL IDs are optional.
+CARTESIA_API_KEY=${CARTESIA_API_KEY}
+CARTESIA_VOICE_ID=${CARTESIA_VOICE_ID}
+CARTESIA_MODEL_ID=${CARTESIA_MODEL_ID}
+DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+DEEPGRAM_TTS_MODEL=${DEEPGRAM_TTS_MODEL}
+
+# Renegades realtime rooms (LiveKit) — group voice/video/chat at /renegades.
+# Make a free project at cloud.livekit.io, paste all three, re-run this script
+# (preserved across re-runs). The page is dark until all three are set. Only the
+# URL reaches the browser (as a prop); key/secret stay server-side, minting
+# scoped room tokens in /api/renegades/token.
+LIVEKIT_URL=${LIVEKIT_URL}
+LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
 EOF
 chmod 600 "${ENV_FILE}"
 
@@ -223,6 +279,66 @@ server {
         proxy_read_timeout 300s;
         # Image uploads (base64) exceed nginx's 1m default — allow up to 30m.
         client_max_body_size 30m;
+    }
+
+    # Premium voice (ElevenLabs TTS) on :3000. PREFIX match (no `=`) so it covers
+    # BOTH /api/tts (production voice) AND /api/tts/bench (the admin /lab voice
+    # bake-off) — an exact `= /api/tts` would shadow /api/tts/bench down to the
+    # :8080 backend (404). Still longer than /api/, so it beats that shadow.
+    # Buffering OFF so streamed audio starts playing promptly.
+    location /api/tts {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 120s;
+    }
+
+    # Group chat rooms (v4 on :3000) — self-hosted SSE chat + Claude/Claudette.
+    # PREFIX match (has /stream and /send sub-paths), longer than /api/ so it
+    # beats the :8080 shadow. Buffering OFF + long read timeout: /api/rooms/stream
+    # is a long-lived Server-Sent Events connection (same needs as /api/chat).
+    location /api/rooms/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+
+    # Renegades realtime rooms (v4 on :3000) — mints LiveKit join tokens. PREFIX
+    # match (it has the /token sub-path and may grow), longer than /api/ so it
+    # beats the :8080 backend shadow. LiveKit media/signaling goes browser↔cloud
+    # directly (wss://…livekit.cloud), NOT through nginx — so a plain JSON proxy
+    # is all this needs.
+    location /api/renegades/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Admin on-demand data (v4 on :3000) — billed-spend + voice-usage lookups the
+    # admin console now fetches on click instead of blocking the page render.
+    # PREFIX match, longer than /api/ so it beats the :8080 backend shadow.
+    location /api/admin/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
     }
 
     # Pre-existing backend — preserved untouched.

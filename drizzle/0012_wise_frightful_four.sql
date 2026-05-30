@@ -1,0 +1,1 @@
+ALTER TABLE "room_message" ADD COLUMN "attachments" jsonb DEFAULT '[]'::jsonb NOT NULL;

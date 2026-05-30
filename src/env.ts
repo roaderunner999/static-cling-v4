@@ -69,6 +69,60 @@ const envSchema = z.object({
   // chat. The Admin API is org-only; it won't work on an individual account.
   ANTHROPIC_ADMIN_KEY: z.string().optional(),
 
+  // --- Voice output (ElevenLabs, premium TTS) — drop-in like the others ---
+  // Server-side ElevenLabs key. When set, the "Premium" voice option lights up
+  // in chat (see `voiceEnabled`) and /api/tts streams ElevenLabs audio; the key
+  // never reaches the browser. Without it, chat still has free native voice
+  // (the browser's built-in speech) for both input and output — voice never
+  // hard-depends on a paid key. Voice INPUT (dictation) is 100% browser-native
+  // and needs no env at all.
+  ELEVENLABS_API_KEY: z.string().optional(),
+  // Which ElevenLabs voice to speak in (a voice_id from your ElevenLabs library).
+  // Defaults to "Rachel", a clear neutral narrator. `preprocess` maps an empty
+  // string (golive writes `ELEVENLABS_VOICE_ID=` when unset) to undefined so the
+  // default actually applies — zod's .default() only fires on undefined, not "".
+  ELEVENLABS_VOICE_ID: z
+    .preprocess((v) => (v === "" ? undefined : v), z.string().default("21m00Tcm4TlvDq8ikWAM")),
+  // ElevenLabs model. Turbo v2.5 is the low-latency choice — the "race car"
+  // pick: near-instant first audio, still natural. Swap to eleven_multilingual_v2
+  // for max fidelity if latency stops mattering.
+  ELEVENLABS_MODEL_ID: z
+    .preprocess((v) => (v === "" ? undefined : v), z.string().default("eleven_turbo_v2_5")),
+
+  // --- Voice bake-off contenders (admin /lab testing — drop-in like ElevenLabs) ---
+  // Low-latency TTS engines we A/B against native + ElevenLabs in /lab. Each
+  // lights up its bench card when its key is present; an absent key shows an
+  // "add the key" hint instead of a Play button. These power /api/tts/bench only
+  // (admin-gated). Production chat voice still goes through /api/tts.
+  //
+  // Cartesia (Sonic) — state-space model, ~90ms first audio: the 2026 latency
+  // leader, and it does custom/cloned voices. Prime candidate for a fast tier.
+  CARTESIA_API_KEY: z.string().optional(),
+  CARTESIA_VOICE_ID: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().default("a0e99841-438c-4a64-b679-ae501e7d6091"),
+  ),
+  CARTESIA_MODEL_ID: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().default("sonic-2"),
+  ),
+  // Deepgram Aura — fast TTS built for voice agents.
+  DEEPGRAM_API_KEY: z.string().optional(),
+  DEEPGRAM_TTS_MODEL: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().default("aura-2-thalia-en"),
+  ),
+
+  // --- /renegades realtime rooms (LiveKit) — drop-in like the others ---
+  // The social layer: group rooms with presence + text chat + mic/cam, powered
+  // by LiveKit. Lights up when all three are set (see `renegadesEnabled`). The
+  // URL is the only one the browser needs (passed as a prop, not NEXT_PUBLIC);
+  // the key/secret stay server-side and only mint room tokens in /api/renegades.
+  // Get them free at cloud.livekit.io (or self-host the LiveKit server).
+  LIVEKIT_URL: z.string().optional(), // wss://<project>.livekit.cloud
+  LIVEKIT_API_KEY: z.string().optional(),
+  LIVEKIT_API_SECRET: z.string().optional(),
+
   // --- Abuse guards (the site is public) ---
   // Per-user burst limit: max chat messages in any 60s window.
   CHAT_RATE_PER_MIN: z.coerce.number().int().positive().default(15),
@@ -115,6 +169,30 @@ export const billingEnabled = Boolean(
 
 /** True when the Claude chat is configured (server-side API key present). */
 export const chatEnabled = Boolean(env.ANTHROPIC_API_KEY);
+
+/**
+ * True when premium voice (ElevenLabs) is configured. Native browser voice
+ * works regardless; this only gates the higher-fidelity ElevenLabs option and
+ * the /api/tts route. Dark until an ElevenLabs key is added.
+ */
+export const voiceEnabled = Boolean(env.ELEVENLABS_API_KEY);
+
+/**
+ * Voice bake-off contenders, each dark until its key is dropped in. Used by the
+ * admin /lab TTS bench (/api/tts/bench) to A/B latency against native +
+ * ElevenLabs. Native always works (browser) and ElevenLabs follows `voiceEnabled`.
+ */
+export const cartesiaEnabled = Boolean(env.CARTESIA_API_KEY);
+export const deepgramVoiceEnabled = Boolean(env.DEEPGRAM_API_KEY);
+
+/**
+ * True when /renegades (LiveKit realtime rooms) is fully configured — needs the
+ * server URL plus the API key/secret to mint join tokens. Dark (honest "set it
+ * up" panel) until all three are present.
+ */
+export const renegadesEnabled = Boolean(
+  env.LIVEKIT_URL && env.LIVEKIT_API_KEY && env.LIVEKIT_API_SECRET,
+);
 
 /**
  * True when an Anthropic Admin key is configured, so the admin console can pull

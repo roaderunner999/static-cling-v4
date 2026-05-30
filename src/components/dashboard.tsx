@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { DashboardAsk } from "@/components/dashboard-ask";
 import { listTasks } from "@/lib/task-queries";
 import { listNotes } from "@/lib/note-queries";
 import { listConversations } from "@/lib/chat-queries";
+import { listAgents } from "@/lib/agent-queries";
 import { monthlyMessageCount } from "@/lib/usage";
 
 /**
@@ -25,10 +27,11 @@ export async function Dashboard({
   name: string;
   limit: number;
 }) {
-  const [tasks, notes, convos, used] = await Promise.all([
+  const [tasks, notes, convos, agents, used] = await Promise.all([
     listTasks(userId),
     listNotes(userId),
     listConversations(userId),
+    listAgents(userId),
     monthlyMessageCount(userId),
   ]);
 
@@ -41,14 +44,15 @@ export async function Dashboard({
   // First-timer: nothing created yet. Show a calm, semi-blank welcome with a few
   // starting points instead of a grid of empty cards. As they chat / write / add
   // tasks, this page fills itself in with the command-center below.
-  const isNew = tasks.length === 0 && notes.length === 0 && convos.length === 0;
+  const isNew =
+    tasks.length === 0 && notes.length === 0 && convos.length === 0 && agents.length === 0;
   if (isNew) {
     return (
-      <main className="mx-auto w-full max-w-3xl px-6 py-16">
+      <main className="w-full flex-1 px-4 py-8 sm:px-8">
         <p className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
           Welcome
         </p>
-        <h1 className="mt-1 text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
           Hi, {first}. This is your dashboard.
         </h1>
         <p className="mt-3 max-w-xl text-sm leading-relaxed text-zinc-500">
@@ -57,7 +61,7 @@ export async function Dashboard({
           live counts. A good place to start:
         </p>
 
-        <div className="mt-8 grid gap-3 sm:grid-cols-3">
+        <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <StartCard
             href="/chat"
             emoji="💬"
@@ -76,6 +80,12 @@ export async function Dashboard({
             title="Add a task"
             body="Track what you’re working on as a grid or a kanban board."
           />
+          <StartCard
+            href="/agents"
+            emoji="🤖"
+            title="Build an agent"
+            body="A saved task Claude runs for you — prices, headlines, your own notes & tasks."
+          />
         </div>
 
         <div className="mt-8">
@@ -91,13 +101,20 @@ export async function Dashboard({
   }
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 py-10">
-      <p className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
-        Welcome back
-      </p>
-      <h1 className="mt-1 text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-        Hi, {first}.
-      </h1>
+    <main className="w-full flex-1 px-4 py-8 sm:px-8">
+      <div className="flex items-baseline justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          <span className="bg-gradient-to-r from-violet-500 to-violet-400 bg-clip-text text-transparent">
+            ✦
+          </span>{" "}
+          Back at it, {first}
+        </h1>
+      </div>
+
+      {/* Slim ask/voice bar — chat is here if you want it, not plastered front. */}
+      <div className="mt-4">
+        <DashboardAsk />
+      </div>
 
       <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat href="/tasks" label="Active tasks" value={active.length} />
@@ -105,6 +122,24 @@ export async function Dashboard({
         <Stat href="/chat" label="Conversations" value={convos.length} />
         <Stat href="/profile" label="Messages / mo" value={`${used} / ${limit}`} />
       </div>
+
+      <Link
+        href="/agents"
+        className="mt-6 flex items-center gap-3 rounded-xl border border-violet-200 bg-violet-50/50 p-4 transition hover:bg-violet-50 dark:border-violet-900/60 dark:bg-violet-950/20 dark:hover:bg-violet-950/30"
+      >
+        <span className="text-2xl">🤖</span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            Agents{agents.length > 0 ? ` · ${agents.length}` : " — new"}
+          </span>
+          <span className="block text-xs text-zinc-500">
+            {agents.length > 0
+              ? "Run your saved agents, or build another."
+              : "Saved tasks Claude runs for you — prices, headlines, your own notes & tasks, as tidy cards."}
+          </span>
+        </span>
+        <span className="shrink-0 text-xs text-violet-600 dark:text-violet-400">Open →</span>
+      </Link>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <Card title="Up next" href="/tasks" cta="All tasks →">
@@ -164,7 +199,7 @@ export async function Dashboard({
 
       <div className="mt-8">
         <Link
-          href="/chat"
+          href="/chat?new=1"
           className="inline-block rounded-md bg-zinc-900 px-5 py-2.5 text-sm font-medium text-zinc-50 transition hover:opacity-90 dark:bg-zinc-50 dark:text-zinc-900"
         >
           Start a new chat →

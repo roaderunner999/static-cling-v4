@@ -8,7 +8,7 @@ export type Plan = "free" | "pro";
 /** Monthly price of Pro, in US dollars (for display; Stripe is authoritative). */
 export const PRO_PRICE_USD = 8;
 
-export type Feature = "lab" | "scheduledWidgets";
+export type Feature = "lab" | "scheduledWidgets" | "premiumVoice";
 
 type PlanLimits = {
   /** Claude messages allowed per calendar month. */
@@ -19,11 +19,13 @@ type PlanLimits = {
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   free: {
     monthlyMessages: 50,
-    features: { lab: false, scheduledWidgets: false },
+    // premiumVoice off: free users get the browser's native voice only, so they
+    // never spend our ElevenLabs credits. Premium (ElevenLabs) is the Pro upsell.
+    features: { lab: false, scheduledWidgets: false, premiumVoice: false },
   },
   pro: {
     monthlyMessages: 2000,
-    features: { lab: true, scheduledWidgets: true },
+    features: { lab: true, scheduledWidgets: true, premiumVoice: true },
   },
 };
 

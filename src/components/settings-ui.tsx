@@ -14,6 +14,7 @@ import {
   type ActionResult,
 } from "@/lib/settings-actions";
 import { startCheckout, openBillingPortal } from "@/lib/billing-actions";
+import { getRailLabelStyle, setRailLabelStyle, type RailLabelStyle } from "@/lib/rail-prefs";
 
 const num = (n: number) => Math.round(n).toLocaleString("en-US");
 const modelLabel = (id: string) => resolveModel(id).label || id;
@@ -65,12 +66,9 @@ export function SettingsUI({
   }
 
   return (
-    <main className="w-full flex-1 px-4 py-10 sm:px-8">
+    <main className="w-full flex-1 px-4 py-8 sm:px-8">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="mb-1 font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
-            Static Cling
-          </p>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             Settings
           </h1>
@@ -351,6 +349,7 @@ const THEME_HEADER_KEY = "staticcling_theme_header";
 function AppearanceCard() {
   const [dark, setDark] = useState<boolean | null>(null);
   const [inHeader, setInHeader] = useState(false);
+  const [railStyle, setRailStyle] = useState<RailLabelStyle>("under");
 
   useEffect(() => {
     // Client-only: reflect the theme the no-flash script already applied + the
@@ -362,8 +361,14 @@ function AppearanceCard() {
     } catch {
       /* ignore */
     }
+    setRailStyle(getRailLabelStyle());
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
+
+  function chooseRail(v: RailLabelStyle) {
+    setRailStyle(v);
+    setRailLabelStyle(v); // persists + tells the live rail to re-render
+  }
 
   function setTheme(d: boolean) {
     document.documentElement.classList.toggle("dark", d);
@@ -425,6 +430,33 @@ function AppearanceCard() {
       <p className="mt-1 text-xs text-zinc-400">
         Off by default — most people set the theme once. Turn this on if you like to
         flip it on the fly.
+      </p>
+
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-100 pt-4 dark:border-zinc-900">
+        <span className="text-sm text-zinc-600 dark:text-zinc-300">Sidebar labels</span>
+        <div className="flex overflow-hidden rounded-md border border-zinc-300 text-sm dark:border-zinc-700">
+          {([
+            ["under", "Under icon"],
+            ["hover", "Hover box"],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => chooseRail(key)}
+              className={`px-3 py-1.5 font-medium transition ${
+                railStyle === key
+                  ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
+                  : "text-zinc-500 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-zinc-400">
+        The desktop left rail: a tiny label under each icon (default), or a small
+        label box that appears beside an icon on hover.
       </p>
     </Card>
   );

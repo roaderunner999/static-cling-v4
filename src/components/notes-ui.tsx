@@ -3,8 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { NoteSummary } from "@/lib/note-queries";
-import { createNote, saveNote, deleteNote, loadNote } from "@/lib/note-actions";
+import {
+  createNote,
+  saveNote,
+  deleteNote,
+  loadNote,
+  searchNoteContent,
+} from "@/lib/note-actions";
 import { NoteEditor } from "@/components/note-editor";
+import { SidebarSearch, useContentSearch, Highlight } from "@/components/sidebar-search";
 
 type Doc = Record<string, unknown>;
 
@@ -33,6 +40,7 @@ export function NotesUI({
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   // Sidebar collapsed by default for more canvas; choice is remembered.
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [noteQuery, setNoteQuery] = useState("");
   // Zen (distraction-free) mode lives here so it can survive a reload — see the
   // restore effect below. NoteEditor renders the actual full-screen canvas.
   const [zen, setZenState] = useState(false);
@@ -58,6 +66,11 @@ export function NotesUI({
       /* ignore */
     }
   }
+  // On a phone the list and the editor can't share the width, so picking a note
+  // (or making one) should drop the list and reveal the editor full-screen. On
+  // desktop (md+) both panes coexist, so we leave the sidebar as-is there.
+  const isMobile = () =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
 
   // On mount: restore the remembered sidebar, then resume where you left off —
   // reopen the last note worked on (falls back to the most recent) so you don't
@@ -270,11 +283,23 @@ export function NotesUI({
     router.push("/chat");
   }
 
+  // Filter the sidebar list. Title/preview matches are instant (local); body
+  // matches come from the debounced server search (noteHits, id → snippet).
+  const { hits: noteHits } = useContentSearch(noteQuery, searchNoteContent);
+  const noteNeedle = noteQuery.trim().toLowerCase();
+  const visibleNotes = noteNeedle
+    ? notes.filter(
+        (n) =>
+          `${n.title} ${n.preview ?? ""}`.toLowerCase().includes(noteNeedle) ||
+          noteHits?.has(n.id),
+      )
+    : notes;
+
   return (
     <div className="flex min-h-0 flex-1">
       {/* Sidebar (collapsible) */}
       {sidebarOpen ? (
-      <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800">
+      <aside className="flex w-full shrink-0 flex-col border-r border-zinc-200 md:w-64 dark:border-zinc-800">
         <div className="flex items-center justify-between px-3 pt-2">
           <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
             Notes
@@ -289,16 +314,28 @@ export function NotesUI({
           </button>
         </div>
         <button
-          onClick={create}
+          onClick={() => {
+            create();
+            if (isMobile()) toggleSidebar(false);
+          }}
           className="mx-3 mb-2 mt-2 rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
           + New note
         </button>
+        {notes.length > 0 && (
+          <SidebarSearch
+            value={noteQuery}
+            onChange={setNoteQuery}
+            placeholder="Search notes"
+          />
+        )}
         <nav className="flex-1 overflow-y-auto px-2 pb-2">
           {notes.length === 0 ? (
             <p className="px-2 py-3 text-xs text-zinc-400">No notes yet.</p>
+          ) : visibleNotes.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-zinc-400">No notes match “{noteQuery}”.</p>
           ) : (
-            notes.map((n) => (
+            visibleNotes.map((n) => (
               <div
                 key={n.id}
                 className={`group flex items-start gap-1 rounded-md px-2 py-2 text-sm ${
@@ -307,10 +344,22 @@ export function NotesUI({
                     : "hover:bg-zinc-50 dark:hover:bg-zinc-900/60"
                 }`}
               >
-                <button onClick={() => open(n.id)} className="min-w-0 flex-1 text-left">
+                <button
+                  onClick={() => {
+                    open(n.id);
+                    if (isMobile()) toggleSidebar(false);
+                  }}
+                  className="min-w-0 flex-1 text-left"
+                >
                   <div className="truncate font-medium">{n.title || "Untitled"}</div>
-                  {n.preview && (
-                    <div className="truncate text-xs text-zinc-400">{n.preview}</div>
+                  {noteHits?.has(n.id) ? (
+                    <div className="truncate text-xs text-zinc-400">
+                      <Highlight text={noteHits.get(n.id)!} needle={noteQuery} />
+                    </div>
+                  ) : (
+                    n.preview && (
+                      <div className="truncate text-xs text-zinc-400">{n.preview}</div>
+                    )
                   )}
                 </button>
                 <button
@@ -337,8 +386,11 @@ export function NotesUI({
         </button>
       )}
 
-      {/* Editor */}
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* Editor — on a phone it's hidden while the list is open so the two panes
+          never fight over the narrow width; md+ always shows both. */}
+      <main
+        className={`${sidebarOpen ? "hidden md:flex" : "flex"} min-h-0 min-w-0 flex-1 flex-col`}
+      >
         {activeId ? (
           <>
             <div className="flex items-center gap-3 border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">

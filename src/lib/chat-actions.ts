@@ -1,11 +1,50 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, ilike } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/session";
 import { db } from "@/db";
-import { conversation } from "@/db/schema";
+import { conversation, message } from "@/db/schema";
 import { getConversation, getMessages, type Attachment } from "@/lib/chat-queries";
+import { likePattern, snippetAround } from "@/lib/search-util";
+
+/**
+ * Content search over the user's own conversations — matches inside message
+ * bodies (either side of the chat), not just the title the client already
+ * filters. Owner-scoped via the session join; returns the matching
+ * conversation ids + a snippet from the most-recent matching message.
+ */
+export async function searchChatContent(
+  query: string,
+): Promise<{ id: string; snippet: string }[]> {
+  const session = await getSession();
+  if (!session) return [];
+  const needle = query.trim();
+  if (needle.length < 2) return [];
+
+  const rows = await db
+    .select({ conversationId: message.conversationId, content: message.content })
+    .from(message)
+    .innerJoin(conversation, eq(message.conversationId, conversation.id))
+    .where(
+      and(
+        eq(conversation.userId, session.user.id),
+        eq(conversation.archived, false),
+        ilike(message.content, likePattern(needle)),
+      ),
+    )
+    .orderBy(desc(message.createdAt))
+    .limit(200);
+
+  // Collapse to one snippet per conversation — the most-recent match wins.
+  const seen = new Map<string, string>();
+  for (const r of rows) {
+    if (!seen.has(r.conversationId)) {
+      seen.set(r.conversationId, snippetAround(r.content, needle));
+    }
+  }
+  return [...seen.entries()].map(([id, snippet]) => ({ id, snippet }));
+}
 
 export type LoadedMessage = {
   id: string;

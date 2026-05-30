@@ -9,9 +9,18 @@ import { authClient } from "@/lib/auth-client";
  * The signed-in user's menu in the top bar — one compact button (avatar + name)
  * that opens a dropdown with Settings / Profile / Sign out. Replaces the old
  * inline "Settings · email · Sign out" cluster to save header space and keep the
- * bar uniform. Client component (needs open/close + sign-out interactivity).
+ * bar uniform. Admins additionally get a Lab / Admin group here (the links used
+ * to sit on the Profile page). Client component (needs open/close + sign-out).
  */
-export function UserMenu({ name, email }: { name: string; email: string }) {
+export function UserMenu({
+  name,
+  email,
+  isAdmin = false,
+}: {
+  name: string;
+  email: string;
+  isAdmin?: boolean;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -35,7 +44,17 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
   }, [open]);
 
   const label = name?.trim() || email;
-  const initial = (label[0] || "?").toUpperCase();
+  // Two-letter initials (first + last word) for the compact avatar — "Walter
+  // Lyons" → "WL". Keeps the top bar tight and leaves room for a future
+  // notifications cluster up here.
+  const initials =
+    label
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "?";
 
   async function signOut() {
     setPending(true);
@@ -54,10 +73,9 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
         aria-expanded={open}
         className="flex items-center gap-2 rounded-md px-2 py-1.5 font-medium transition hover:bg-zinc-100 dark:hover:bg-zinc-900"
       >
-        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-zinc-900 text-xs font-semibold text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900">
-          {initial}
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-zinc-900 text-[11px] font-semibold text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900">
+          {initials}
         </span>
-        <span className="hidden max-w-[10rem] truncate sm:inline">{label}</span>
         <svg
           width="12"
           height="12"
@@ -80,6 +98,15 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
           </div>
           <Item href="/settings" onNavigate={() => setOpen(false)}>Settings</Item>
           <Item href="/profile" onNavigate={() => setOpen(false)}>Profile</Item>
+          {isAdmin && (
+            <div className="border-t border-zinc-100 dark:border-zinc-900">
+              <p className="px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+                Admin
+              </p>
+              <Item href="/lab" onNavigate={() => setOpen(false)} accent>The Lab</Item>
+              <Item href="/admin" onNavigate={() => setOpen(false)} accent>Admin console</Item>
+            </div>
+          )}
           <div className="border-t border-zinc-100 dark:border-zinc-900">
             <button
               type="button"
@@ -100,10 +127,12 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
 function Item({
   href,
   onNavigate,
+  accent = false,
   children,
 }: {
   href: string;
   onNavigate: () => void;
+  accent?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -111,7 +140,11 @@ function Item({
       href={href}
       role="menuitem"
       onClick={onNavigate}
-      className="block px-3 py-2 text-sm text-zinc-700 transition hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-900"
+      className={`block px-3 py-2 text-sm transition ${
+        accent
+          ? "text-violet-700 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-950/40"
+          : "text-zinc-700 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-900"
+      }`}
     >
       {children}
     </Link>

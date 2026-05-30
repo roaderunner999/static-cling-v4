@@ -71,6 +71,27 @@
       "when": 1779987729129,
       "tag": "0009_peaceful_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1779999900134,
+      "tag": "0010_solid_white_tiger",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1780084941823,
+      "tag": "0011_reflective_the_hunter",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1780104957018,
+      "tag": "0012_wise_frightful_four",
+      "breakpoints": true
     }
   ]
 }
